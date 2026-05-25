@@ -1,0 +1,133 @@
+{
+  "version": "1.0",
+  "profiles": {
+    "valo": {
+      "label": "Valo",
+      "active_preset": "Just chatting",
+      "max_transcript_clip_seconds": 45
+    },
+    "jeu": {
+      "label": "Jeu",
+      "active_preset": "Just chatting",
+      "max_transcript_clip_seconds": 45
+    },
+    "react": {
+      "label": "React",
+      "active_preset": "Just chatting",
+      "max_transcript_clip_seconds": 45
+    }
+  },
+  "presets": {
+    "Valorant Preset": {
+      "name": "Valorant Preset",
+      "profile": "valo",
+      "mode": "fixed_split",
+      "safe_padding": 0.06,
+      "max_clip_seconds": 45,
+      "gameplay": {
+        "zoom_x": 2.11,
+        "zoom_y": 2.11,
+        "pan": -164.28,
+        "tilt": 1423.18,
+        "crop_top": 0.0,
+        "crop_bottom": 0.0,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      },
+      "camera": {
+        "zoom_x": 3.49,
+        "zoom_y": 3.49,
+        "pan": 1293.0,
+        "tilt": 49.62,
+        "crop_top": 0.0,
+        "crop_bottom": 0.42,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      },
+      "single": {
+        "zoom_x": 0.0,
+        "zoom_y": 0.0,
+        "pan": 0.0,
+        "tilt": 0.0,
+        "crop_top": 0.0,
+        "crop_bottom": 0.0,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      }
+    },
+    "Jeux": {
+      "name": "Jeux",
+      "profile": "valo",
+      "mode": "fixed_split",
+      "safe_padding": 0.06,
+      "max_clip_seconds": 45,
+      "gameplay": {
+        "zoom_x": 1.78,
+        "zoom_y": 1.78,
+        "pan": 117.72,
+        "tilt": 1388.18,
+        "crop_top": 0.0,
+        "crop_bottom": 0.0,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      },
+      "camera": {
+        "zoom_x": 3.74,
+        "zoom_y": 3.74,
+        "pan": -1460.0,
+        "tilt": 448.62,
+        "crop_top": 0.0,
+        "crop_bottom": 0.42,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      },
+      "single": {
+        "zoom_x": 0.0,
+        "zoom_y": 0.0,
+        "pan": 0.0,
+        "tilt": 0.0,
+        "crop_top": 0.0,
+        "crop_bottom": 0.0,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      }
+    },
+    "Just chatting": {
+      "name": "Just chatting",
+      "profile": "react",
+      "mode": "fixed_split",
+      "safe_padding": 0.06,
+      "max_clip_seconds": 45,
+      "single": {
+        "zoom_x": 0.1,
+        "zoom_y": 0.1,
+        "pan": 0.0,
+        "tilt": 0.0,
+        "crop_top": 0.0,
+        "crop_bottom": 0.0,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      },
+      "gameplay": {
+        "zoom_x": 2.62,
+        "zoom_y": 2.62,
+        "pan": -1.0,
+        "tilt": 1.0,
+        "crop_top": 0.0,
+        "crop_bottom": 0.0,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      },
+      "camera": {
+        "zoom_x": 3.74,
+        "zoom_y": 3.74,
+        "pan": 1.0,
+        "tilt": 1.0,
+        "crop_top": 0.0,
+        "crop_bottom": 0.42,
+        "crop_left": 0.0,
+        "crop_right": 0.0
+      }
+    }
+  }
+}

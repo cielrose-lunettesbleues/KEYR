@@ -1,0 +1,118 @@
+{
+  "pipeline_version": "0.1.0",
+  "language": "fr",
+  "video": {
+    "output_width": 1080,
+    "output_height": 1920,
+    "output_fps": 60,
+    "min_clip_seconds": 20,
+    "preferred_clip_seconds": 40,
+    "max_clip_seconds": 60,
+    "chapter_pre_roll_seconds": 10,
+    "chapter_post_roll_seconds": 25
+  },
+  "quota": {
+    "min_per_hour": 2.0,
+    "target_per_hour": 2.5,
+    "max_per_hour": 3.0,
+    "render_overflow": true
+  },
+  "paths": {
+    "input_dir": "input",
+    "work_dir": "work",
+    "output_dir": "output",
+    "feedback_dir": "feedback"
+  },
+  "audio": {
+    "profile_name": "balanced_gaming_feel",
+    "always_muted_tracks": [
+      4
+    ],
+    "analysis": {
+      "voice_track": 2,
+      "context_tracks": [
+        5
+      ],
+      "optional_react_track": 3,
+      "use_optional_react_only_with_voice": true,
+      "fallback_intro_skip_minutes": 8,
+      "music_only_voice_floor_ratio": 0.45
+    },
+    "render": {
+      "base_track": 6
+    },
+    "tracks": [
+      {
+        "id": 1,
+        "name": "master_all",
+        "mute": false,
+        "gain_db": 0.0
+      },
+      {
+        "id": 2,
+        "name": "mic_clean",
+        "mute": false,
+        "gain_db": 1.5
+      },
+      {
+        "id": 3,
+        "name": "opera_browser",
+        "mute": false,
+        "gain_db": -3.0
+      },
+      {
+        "id": 4,
+        "name": "spotify",
+        "mute": true,
+        "gain_db": -12.0
+      },
+      {
+        "id": 5,
+        "name": "discord_game",
+        "mute": false,
+        "gain_db": -1.0
+      },
+      {
+        "id": 6,
+        "name": "vod_no_spotify",
+        "mute": false,
+        "gain_db": 0.0
+      }
+    ],
+    "ducking": {
+      "enabled": true,
+      "target_track": "music",
+      "trigger_track": "mic_clean",
+      "duck_gain_db": -6.0
+    }
+  },
+  "captions": {
+    "enabled": true,
+    "engine": "faster_whisper",
+    "mode": "editable_subtitle_track",
+    "quality_mode": "quality",
+    "language": "fr",
+    "style": "minimal_clean",
+    "model_size": "small",
+    "device": "auto",
+    "compute_type": "int8",
+    "style_profile_version": "social-fr-v1",
+    "max_lines": 2,
+    "max_chars_per_line": 36,
+    "min_duration_ms": 700,
+    "max_duration_ms": 2200,
+    "max_hold_ms": 2600,
+    "cps_target": 16,
+    "remove_fillers": true,
+    "highlight_active_word": true
+  },
+  "scoring": {
+    "profile_version": "score-v1",
+    "weights": {
+      "audio_energy": 0.35,
+      "speech_intensity": 0.35,
+      "scene_pacing": 0.2,
+      "silence_penalty": 0.1
+    }
+  }
+}
