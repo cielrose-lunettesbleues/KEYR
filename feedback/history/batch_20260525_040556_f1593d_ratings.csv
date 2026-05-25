@@ -1,0 +1,8 @@
+batch_id,clip_id,rating,seed_type,reason,start_seconds,end_seconds,notes
+batch_20260525_040556_f1593d,2026-05-22 20-54-13__chapter_0001,5,chapter,OBS chapter marker,6777.183,6812.183,
+batch_20260525_040556_f1593d,2026-05-22 20-54-13__fallback_0000,5,fallback_discovery,"No chapters found: audio peak + activity (hook=1.19; transcript_discovery;funny=2;clivant=2;etonnant=2;matched=c'est,coup,est,fait)",1703.02,1743.02,
+batch_20260525_040556_f1593d,2026-05-22 20-54-13__fallback_0003,5,fallback_discovery,"No chapters found: audio peak + activity (hook=1.07; transcript_discovery;funny=1;clivant=2;etonnant=1;matched=augmentes,bien,c'est,chance)",3361.62,3401.62,
+batch_20260525_040556_f1593d,2026-05-22 20-54-13__fallback_0005,5,fallback_discovery,"No chapters found: audio peak + activity (hook=0.81; transcript_discovery;funny=2;clivant=2;etonnant=2;matched=c'est,est,fait,incroyable)",1671.05,1711.05,
+batch_20260525_040556_f1593d,2026-05-22 20-54-13__fallback_0007,1,fallback_discovery,"No chapters found: audio peak + activity (hook=0.93; voice_track=2;context=[5];intro_skip=8m;clivant=1;matched=120,arriver,bon,c'est)",2823.0,2863.0,
+batch_20260525_040556_f1593d,2026-05-22 20-54-13__fallback_0013,5,fallback_discovery,"No chapters found: audio peak + activity (hook=1.05; transcript_discovery;clivant=2;matched=c'est,est,game,j'ai)",2490.32,2530.32,
+batch_20260525_040556_f1593d,2026-05-22 20-54-13__fallback_0015,5,fallback_discovery,"No chapters found: audio peak + activity (hook=1.35; voice_track=2;context=[5];intro_skip=8m;matched=bien,bon,c'est,contre)",4843.0,4883.0,

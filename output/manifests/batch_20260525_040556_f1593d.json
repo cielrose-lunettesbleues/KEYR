@@ -1,0 +1,120 @@
+{
+  "batch_id": "batch_20260525_040556_f1593d",
+  "source_vods": [
+    "E:\\2026-05-22 20-54-13.mp4"
+  ],
+  "clips": [
+    {
+      "clip_id": "2026-05-22 20-54-13__chapter_0001",
+      "display_name": "Chapitre 1",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 6777.183,
+      "end_seconds": 6812.183,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_040556_f1593d__Chapitre 1"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0000",
+      "display_name": "Auto 1",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 1703.02,
+      "end_seconds": 1743.02,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.9076,
+      "reason": "No chapters found: audio peak + activity (hook=1.19; transcript_discovery;funny=2;clivant=2;etonnant=2;matched=c'est,coup,est,fait)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_040556_f1593d__Auto 1"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0003",
+      "display_name": "Auto 2",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 3361.62,
+      "end_seconds": 3401.62,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.8367,
+      "reason": "No chapters found: audio peak + activity (hook=1.07; transcript_discovery;funny=1;clivant=2;etonnant=1;matched=augmentes,bien,c'est,chance)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_040556_f1593d__Auto 2"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0005",
+      "display_name": "Auto 3",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 1671.05,
+      "end_seconds": 1711.05,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.8109,
+      "reason": "No chapters found: audio peak + activity (hook=0.81; transcript_discovery;funny=2;clivant=2;etonnant=2;matched=c'est,est,fait,incroyable)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_040556_f1593d__Auto 3"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0007",
+      "display_name": "Auto 4",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 2823.0,
+      "end_seconds": 2863.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7988,
+      "reason": "No chapters found: audio peak + activity (hook=0.93; voice_track=2;context=[5];intro_skip=8m;clivant=1;matched=120,arriver,bon,c'est)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_040556_f1593d__Auto 4"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0013",
+      "display_name": "Auto 5",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 2490.32,
+      "end_seconds": 2530.32,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7104,
+      "reason": "No chapters found: audio peak + activity (hook=1.05; transcript_discovery;clivant=2;matched=c'est,est,game,j'ai)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_040556_f1593d__Auto 5"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0015",
+      "display_name": "Auto 6",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 4843.0,
+      "end_seconds": 4883.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.6723,
+      "reason": "No chapters found: audio peak + activity (hook=1.35; voice_track=2;context=[5];intro_skip=8m;matched=bien,bon,c'est,contre)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_040556_f1593d__Auto 6"
+    }
+  ],
+  "pipeline_version": "0.1.0",
+  "warnings": [
+    "2026-05-22 20-54-13.mp4: Skipped chapter 0 at 0.000s: auto_start_chapter_0"
+  ],
+  "quota_summary": [
+    {
+      "vod": "2026-05-22 20-54-13.mp4",
+      "target_quota": 8,
+      "max_quota": 9,
+      "chapter_used": 1,
+      "fallback_added": 6,
+      "total_selected": 7
+    }
+  ]
+}

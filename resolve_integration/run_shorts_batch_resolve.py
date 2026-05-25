@@ -2033,20 +2033,48 @@ def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, 
     if not timeline:
         return False, "No active timeline", {}
 
-    item = _safe_call(timeline, "GetCurrentVideoItem")
-    if not item:
-        return False, "No selected/current clip", {}
-
-    media_item = _safe_call(item, "GetMediaPoolItem")
-    if not media_item:
-        return False, "Selected clip has no media source", {}
-
-    props = _safe_call(media_item, "GetClipProperty", default={}) or {}
-    source_path = str(props.get("File Path") or "").strip()
-    if not source_path:
-        return False, "Could not read source file path", {}
-
     fps = _fps_from_project(project)
+    media_pool = _safe_call(project, "GetMediaPool")
+
+    def _source_path_from_media_item(media_item: Any) -> str:
+        if not media_item:
+            return ""
+        props = _safe_call(media_item, "GetClipProperty", default={}) or {}
+        return str(props.get("File Path") or "").strip()
+
+    def _item_from_playhead_or_current() -> Any | None:
+        current = _safe_call(timeline, "GetCurrentVideoItem")
+        if current:
+            return current
+        video_track_count = int(_safe_call(timeline, "GetTrackCount", "video", default=0) or 0)
+        if video_track_count <= 0:
+            video_track_count = 1
+        for track_idx in range(video_track_count, 0, -1):
+            it = _get_item_at_current_frame(timeline, track_idx)
+            if it:
+                return it
+        return None
+
+    item = _item_from_playhead_or_current()
+    source_path = ""
+    fallback_range: tuple[int, int] | None = None
+
+    if item is not None:
+        media_item = _safe_call(item, "GetMediaPoolItem")
+        source_path = _source_path_from_media_item(media_item)
+        if not source_path:
+            return False, "Selected timeline clip has no readable source path", {}
+    else:
+        selected_media = _safe_call(media_pool, "GetSelectedClips", default=[]) if media_pool else []
+        selected_first = selected_media[0] if selected_media else None
+        if not selected_first:
+            return False, "No clip at playhead and no selected clip in Media Pool", {}
+        source_path = _source_path_from_media_item(selected_first)
+        if not source_path:
+            return False, "Selected Media Pool clip has no readable source path", {}
+        fallback_range = _get_timeline_selected_range(timeline)
+        if fallback_range is None:
+            return False, "No clip at playhead. Select timeline In/Out range to use selected Media Pool clip", {}
 
     def _to_int(v: Any) -> int | None:
         try:
@@ -2056,39 +2084,42 @@ def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, 
 
     src_in = None
     src_out = None
-    for meth in ("GetSourceStartFrame", "GetLeftOffset"):
-        val = _to_int(_safe_call(item, meth, default=None))
-        if val is not None:
-            src_in = val
-            break
-    for meth in ("GetSourceEndFrame", "GetRightOffset"):
-        val = _to_int(_safe_call(item, meth, default=None))
-        if val is not None:
-            src_out = val
-            break
 
-    # Resolve fallback variants
-    if src_in is None or src_out is None:
-        all_props = _safe_call(item, "GetProperty", default={}) or {}
-        if src_in is None:
-            src_in = _to_int(all_props.get("Source Start"))
-        if src_out is None:
-            src_out = _to_int(all_props.get("Source End"))
+    if fallback_range is not None:
+        src_in, src_out = fallback_range
+    else:
+        for meth in ("GetSourceStartFrame", "GetLeftOffset"):
+            val = _to_int(_safe_call(item, meth, default=None))
+            if val is not None:
+                src_in = val
+                break
+        for meth in ("GetSourceEndFrame", "GetRightOffset"):
+            val = _to_int(_safe_call(item, meth, default=None))
+            if val is not None:
+                src_out = val
+                break
 
-    if src_in is None or src_out is None or src_out <= src_in:
-        tl_start = _to_int(_safe_call(item, "GetStart", default=None))
-        tl_end = _to_int(_safe_call(item, "GetEnd", default=None))
-        if tl_start is None or tl_end is None or tl_end <= tl_start:
-            return False, "Could not read selected clip range", {}
-        src_in = 0
-        src_out = max(1, tl_end - tl_start)
+        if src_in is None or src_out is None:
+            all_props = _safe_call(item, "GetProperty", default={}) or {}
+            if src_in is None:
+                src_in = _to_int(all_props.get("Source Start"))
+            if src_out is None:
+                src_out = _to_int(all_props.get("Source End"))
+
+        if src_in is None or src_out is None or src_out <= src_in:
+            tl_start = _to_int(_safe_call(item, "GetStart", default=None))
+            tl_end = _to_int(_safe_call(item, "GetEnd", default=None))
+            if tl_start is None or tl_end is None or tl_end <= tl_start:
+                return False, "Could not read clip range from timeline item", {}
+            src_in = 0
+            src_out = max(1, tl_end - tl_start)
 
     clip_start = max(0.0, float(src_in) / max(1, fps))
     clip_end = max(clip_start + 0.1, float(src_out) / max(1, fps))
     return True, "ok", {
         "project": project,
         "timeline": timeline,
-        "media_pool": _safe_call(project, "GetMediaPool"),
+        "media_pool": media_pool,
         "source_path": source_path,
         "clip_start": clip_start,
         "clip_end": clip_end,
