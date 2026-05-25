@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import csv
 import re
 import sys
 import os
@@ -465,6 +466,117 @@ def _ask_user_inputs(
         query_var = tk.StringVar(value="")
         tk.Entry(form, textvariable=query_var, width=80, bd=2, relief="sunken").grid(row=5, column=1, padx=8, pady=6, sticky="we")
 
+        transcript_select_var = tk.BooleanVar(value=False)
+
+        def open_keywords_editor() -> None:
+            try:
+                root_dir = _repo_root()
+                lexicon_path = root_dir / "config" / "transcript_lexicon_user.json"
+                default_categories = {"drole": {}, "clivant": {}, "etonnant": {}}
+                data: dict[str, Any] = {"version": 1, "updated_at": "", "categories": default_categories}
+                if lexicon_path.exists():
+                    try:
+                        with lexicon_path.open("r", encoding="utf-8") as f:
+                            loaded = json.load(f)
+                        if isinstance(loaded, dict):
+                            data = loaded
+                    except Exception:
+                        pass
+
+                cats = data.get("categories", {}) if isinstance(data.get("categories", {}), dict) else {}
+                for cat_name in ("drole", "clivant", "etonnant"):
+                    if not isinstance(cats.get(cat_name), dict):
+                        cats[cat_name] = {}
+
+                top = tk.Toplevel(root)
+                top.title("Transcript Key Words")
+                top.geometry("780x560")
+                top.configure(bg=colors["panel_alt"])
+                top.transient(root)
+
+                frame = tk.Frame(top, bg=colors["panel_alt"])
+                frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+                text_boxes: dict[str, Any] = {}
+                order = ("drole", "clivant", "etonnant")
+                for idx, cat_name in enumerate(order):
+                    section = tk.LabelFrame(frame, text=cat_name, bg=colors["panel"], fg=colors["ink"], bd=2, relief="groove")
+                    section.grid(row=0, column=idx, padx=6, pady=6, sticky="nsew")
+                    frame.grid_columnconfigure(idx, weight=1)
+                    frame.grid_rowconfigure(0, weight=1)
+
+                    txt = tk.Text(section, width=24, height=24, bg=colors["sun_soft"], fg=colors["ink"], bd=1, relief="sunken")
+                    txt.pack(fill="both", expand=True, padx=6, pady=6)
+                    rows: list[str] = []
+                    table = cats.get(cat_name, {}) if isinstance(cats, dict) else {}
+                    if isinstance(table, dict):
+                        for k, v in sorted(table.items(), key=lambda kv: kv[0]):
+                            rows.append(f"{k}={v}")
+                    txt.insert("1.0", "\n".join(rows))
+                    text_boxes[cat_name] = txt
+
+                hint = tk.Label(
+                    top,
+                    text="Format: mot=poids (un par ligne). Exemple: incroyable=1.2",
+                    bg=colors["panel_alt"],
+                    fg=colors["ink"],
+                    anchor="w",
+                )
+                hint.pack(fill="x", padx=10, pady=(0, 6))
+
+                def save_keywords() -> None:
+                    updated_categories: dict[str, dict[str, float]] = {"drole": {}, "clivant": {}, "etonnant": {}}
+                    for cat_name, box in text_boxes.items():
+                        raw = box.get("1.0", "end").splitlines()
+                        for line_no, line in enumerate(raw, start=1):
+                            s = line.strip()
+                            if not s:
+                                continue
+                            if "=" not in s:
+                                messagebox.showerror("Short Editor", f"{cat_name} line {line_no}: expected mot=poids")
+                                return
+                            key, value = s.split("=", 1)
+                            token = key.strip().lower()
+                            if not token:
+                                messagebox.showerror("Short Editor", f"{cat_name} line {line_no}: empty keyword")
+                                return
+                            try:
+                                weight = float(value.strip())
+                            except Exception:
+                                messagebox.showerror("Short Editor", f"{cat_name} line {line_no}: invalid weight")
+                                return
+                            updated_categories[cat_name][token] = round(weight, 3)
+
+                    data["version"] = int(data.get("version", 1) or 1)
+                    data["categories"] = updated_categories
+                    data["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    lexicon_path.parent.mkdir(parents=True, exist_ok=True)
+                    with lexicon_path.open("w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                        f.write("\n")
+                    set_status("Transcript key words saved", warnings=[])
+                    messagebox.showinfo("Short Editor", f"Saved: {lexicon_path}")
+
+                controls = tk.Frame(top, bg=colors["panel_alt"])
+                controls.pack(fill="x", padx=10, pady=(0, 8))
+                ui_button(controls, "Save", save_keywords, primary=True).pack(side="right", padx=4)
+                ui_button(controls, "Close", top.destroy, primary=False).pack(side="right", padx=4)
+            except Exception as exc:
+                set_status(f"Keyword editor error: {exc}")
+
+        transcript_opts = tk.Frame(form, bg=colors["panel_alt"])
+        transcript_opts.grid(row=6, column=1, padx=8, pady=6, sticky="w")
+        tk.Checkbutton(
+            transcript_opts,
+            text="Use transcript for clip selection",
+            variable=transcript_select_var,
+            bg=colors["panel_alt"],
+            fg=colors["ink"],
+            selectcolor=colors["sun_soft"],
+            activebackground=colors["panel_alt"],
+        ).pack(side="left", padx=(0, 8))
+        ui_button(transcript_opts, "See key words", open_keywords_editor, primary=False).pack(side="left")
+
         master_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
             form,
@@ -474,7 +586,7 @@ def _ask_user_inputs(
             fg=colors["ink"],
             selectcolor=colors["sun_soft"],
             activebackground=colors["panel_alt"],
-        ).grid(row=6, column=1, padx=8, pady=6, sticky="w")
+        ).grid(row=7, column=1, padx=8, pady=6, sticky="w")
 
         editor_wrap = tk.Frame(root, bg=colors["bg"])
         editor_wrap.grid(row=2, column=0, columnspan=3, padx=10, pady=8, sticky="nsew")
@@ -1050,6 +1162,7 @@ def _ask_user_inputs(
                 "profile": profile_var.get().strip() or "valo",
                 "preset_id": preset_var.get().strip() or "VALO_FIXED_SPLIT_LEFTCAM_V1",
                 "query": query_var.get().strip(),
+                "use_transcript_for_selection": bool(transcript_select_var.get()),
                 "render_master": bool(master_var.get()),
                 "strict_manifest": False,
                 "require_subtitles": False,
@@ -1064,7 +1177,71 @@ def _ask_user_inputs(
             else:
                 set_status("Generating batch (fast, no subtitles)...", warnings=[])
             root.update_idletasks()
-            result = on_generate(params)
+
+            progress_top = tk.Toplevel(root)
+            progress_top.title("Short Editor")
+            progress_top.geometry("420x120")
+            progress_top.configure(bg=colors["panel_alt"])
+            progress_top.transient(root)
+            progress_top.attributes("-topmost", True)
+            progress_top.grab_set()
+            progress_top.protocol("WM_DELETE_WINDOW", lambda: None)
+
+            progress_text = tk.StringVar(
+                value="Generating subtitles, this can take a few minutes..."
+                if require_subtitles
+                else "Generating batch..."
+            )
+            tk.Label(
+                progress_top,
+                textvariable=progress_text,
+                bg=colors["panel_alt"],
+                fg=colors["ink"],
+                font=("Segoe UI", 10, "bold"),
+                wraplength=380,
+                justify="left",
+                padx=12,
+                pady=12,
+            ).pack(fill="both", expand=True)
+
+            result_box: dict[str, Any] = {"result": None, "error": None}
+
+            def _worker_generate() -> None:
+                try:
+                    result_box["result"] = on_generate(params)
+                except Exception as exc:
+                    result_box["error"] = exc
+
+            worker = threading.Thread(target=_worker_generate, daemon=True)
+            worker.start()
+
+            ticks = 0
+            while worker.is_alive():
+                ticks += 1
+                if require_subtitles and ticks % 100 == 0:
+                    progress_text.set("Generating subtitles... still running, please wait.")
+                try:
+                    progress_top.update_idletasks()
+                    progress_top.update()
+                except Exception:
+                    pass
+                time.sleep(0.03)
+
+            try:
+                progress_top.grab_release()
+            except Exception:
+                pass
+            try:
+                progress_top.destroy()
+            except Exception:
+                pass
+
+            if result_box["error"] is not None:
+                err = result_box["error"]
+                set_status(f"Generation failed: {err}", warnings=[str(err)])
+                return
+
+            result = result_box["result"]
             should_open_rating = False
             if isinstance(result, dict):
                 msg = str(result.get("message", "Done"))
@@ -1093,9 +1270,122 @@ def _ask_user_inputs(
             else:
                 set_status(str(result), warnings=[])
 
+        def add_subtitles_to_selected_clip() -> None:
+            set_status("Generating subtitles for selected clip...", warnings=[])
+            root.update_idletasks()
+
+            progress_top = tk.Toplevel(root)
+            progress_top.title("Short Editor")
+            progress_top.geometry("420x120")
+            progress_top.configure(bg=colors["panel_alt"])
+            progress_top.transient(root)
+            progress_top.attributes("-topmost", True)
+            progress_top.grab_set()
+            progress_top.protocol("WM_DELETE_WINDOW", lambda: None)
+            progress_text = tk.StringVar(value="Transcribing selected clip source...")
+            tk.Label(
+                progress_top,
+                textvariable=progress_text,
+                bg=colors["panel_alt"],
+                fg=colors["ink"],
+                font=("Segoe UI", 10, "bold"),
+                wraplength=380,
+                justify="left",
+                padx=12,
+                pady=12,
+            ).pack(fill="both", expand=True)
+
+            result_box: dict[str, Any] = {"result": None, "error": None}
+
+            def _worker_single_sub() -> None:
+                try:
+                    from short_editor.subtitles import generate_srt_for_clip
+                    from short_editor.transcription import ensure_transcript
+
+                    ok_ctx, ctx_msg, ctx = _selected_clip_subtitle_context(resolve)
+                    if not ok_ctx:
+                        result_box["result"] = {"ok": False, "message": ctx_msg}
+                        return
+                    source_path = Path(str(ctx["source_path"]))
+                    clip_start = float(ctx["clip_start"])
+                    clip_end = float(ctx["clip_end"])
+                    timeline = ctx["timeline"]
+                    media_pool = ctx["media_pool"]
+                    timeline_name = str(ctx["timeline_name"])
+                    item_name = str(ctx["item_name"])
+
+                    cfg = _load_pipeline_config(_repo_root())
+                    transcript_path = ensure_transcript(source_path, cfg, _repo_root() / "output" / "transcripts")
+                    subtitle_dir = _repo_root() / "output" / "subtitles" / "manual"
+                    out_name = _safe_name_token(item_name or timeline_name, limit=120)
+                    out_srt = subtitle_dir / f"{out_name}.srt"
+                    ok_srt = generate_srt_for_clip(transcript_path, clip_start, clip_end, out_srt, cfg.get("captions", {}))
+                    if not ok_srt:
+                        result_box["result"] = {"ok": False, "message": "No subtitle content found for selected clip range."}
+                        return
+
+                    active_batch_id = str(session_ref.get("batch_id") or "").strip()
+                    if active_batch_id:
+                        _ensure_batch_folder(media_pool, active_batch_id)
+                    else:
+                        _ensure_shorteditor_subfolder(media_pool, "Manual")
+
+                    imported_item = _ensure_media_item(media_pool, out_srt)
+                    if imported_item is None:
+                        result_box["result"] = {
+                            "ok": True,
+                            "message": f"SRT ready for selected clip (disk only): {out_srt.name}",
+                            "warnings": [f"Could not import subtitle in Media Pool: {out_srt}"],
+                        }
+                        return
+
+                    target_folder = active_batch_id if active_batch_id else "Manual"
+                    result_box["result"] = {
+                        "ok": True,
+                        "message": f"SRT ready and imported to Media Pool/{target_folder}: {out_srt.name}",
+                    }
+                except Exception as exc:
+                    result_box["error"] = exc
+
+            worker = threading.Thread(target=_worker_single_sub, daemon=True)
+            worker.start()
+            ticks = 0
+            while worker.is_alive():
+                ticks += 1
+                if ticks % 100 == 0:
+                    progress_text.set("Still processing selected clip subtitles...")
+                try:
+                    progress_top.update_idletasks()
+                    progress_top.update()
+                except Exception:
+                    pass
+                time.sleep(0.03)
+
+            try:
+                progress_top.grab_release()
+            except Exception:
+                pass
+            try:
+                progress_top.destroy()
+            except Exception:
+                pass
+
+            if result_box["error"] is not None:
+                err = result_box["error"]
+                set_status(f"Selected clip subtitles failed: {err}", warnings=[str(err)])
+                return
+
+            res = result_box.get("result") or {}
+            if bool(res.get("ok", False)):
+                set_status(str(res.get("message", "Done")), list(res.get("warnings", []) or []))
+            else:
+                msg = str(res.get("message", "Unknown subtitle error"))
+                set_status(msg, warnings=[msg])
+
         footer = tk.Frame(root, bg=colors["bg"], bd=0)
         footer.grid(row=3, column=0, columnspan=3, sticky="we", padx=10, pady=(2, 12))
         ui_button(footer, "Noter le batch", open_rate_batch_window, primary=False).pack(side="left", padx=6)
+        ui_button(footer, "Add Subtitles to Clip", add_subtitles_to_selected_clip, primary=False).pack(side="left", padx=6)
         ui_button(footer, "Generate + Auto Subtitles (Quality)", run_now_quality, primary=True).pack(side="right", padx=6)
         ui_button(footer, "Generate Batch (Fast)", run_now, primary=True).pack(side="right", padx=6)
         ui_button(footer, "Update Composition (Batch)", update_now, primary=False).pack(side="right", padx=6)
@@ -1130,6 +1420,7 @@ def _fps_from_project(project: Any) -> int:
 class ClipPlan:
     clip_id: str
     display_name: str
+    timeline_name: str
     source_path: str
     start_seconds: float
     end_seconds: float
@@ -1157,6 +1448,21 @@ def _assign_simple_display_names_dict(clips: list[dict[str, Any]]) -> None:
         else:
             c["display_name"] = f"Auto {auto_idx}"
             auto_idx += 1
+
+
+def _assign_timeline_names_dict(clips: list[dict[str, Any]], batch_id: str) -> None:
+    used_timeline_names: set[str] = set()
+    for c in clips:
+        display = _safe_name_token(str(c.get("display_name") or c.get("clip_id") or "clip"), limit=84)
+        timeline_name = f"{batch_id}__{display}"
+        if timeline_name in used_timeline_names:
+            dup_idx = 2
+            base_name = timeline_name
+            while f"{base_name} ({dup_idx})" in used_timeline_names:
+                dup_idx += 1
+            timeline_name = f"{base_name} ({dup_idx})"
+        used_timeline_names.add(timeline_name)
+        c["timeline_name"] = timeline_name
 
 
 def _select_non_overlapping_fallback(existing: list[dict[str, float]], candidates: list[dict[str, float]], needed: int) -> list[dict[str, float]]:
@@ -1247,7 +1553,12 @@ def _prompt_vod_path_native(default_dir: Path, parent: Any | None = None) -> Pat
     return None
 
 
-def _generate_manifest_for_vod(root: Path, vod_path: Path, generate_subtitles: bool = True) -> Path:
+def _generate_manifest_for_vod(
+    root: Path,
+    vod_path: Path,
+    generate_subtitles: bool = True,
+    use_transcript_for_selection: bool = False,
+) -> Path:
     # Resolve scripts run from external script folders; ensure project root is importable.
     root_str = str(root)
     if root_str not in sys.path:
@@ -1265,6 +1576,13 @@ def _generate_manifest_for_vod(root: Path, vod_path: Path, generate_subtitles: b
 
     cfg = _load_pipeline_config(root)
     manifest = probe_vod(vod_path)
+    if use_transcript_for_selection:
+        try:
+            ensure_transcript(vod_path, cfg, root / "output" / "transcripts")
+            _log(f"transcript_selection_enabled vod={vod_path}")
+        except Exception as exc:
+            _log(f"transcript_selection_failed vod={vod_path} err={exc}")
+
     chapter_clips, chapter_skips = build_chapter_candidates_with_skips(manifest, cfg)
     manifest_warnings = [f"{vod_path.name}: {msg}" for msg in chapter_skips]
 
@@ -1286,6 +1604,7 @@ def _generate_manifest_for_vod(root: Path, vod_path: Path, generate_subtitles: b
         c["subtitle_path"] = ""
         clip_objs.append(c)
     _assign_simple_display_names_dict(clip_objs)
+    _assign_timeline_names_dict(clip_objs, batch_id)
 
     captions_cfg = cfg.get("captions", {})
     captions_enabled = bool(captions_cfg.get("enabled", True)) and bool(generate_subtitles)
@@ -1298,18 +1617,43 @@ def _generate_manifest_for_vod(root: Path, vod_path: Path, generate_subtitles: b
                     transcript_path = ensure_transcript(vod_path, cfg, root / "output" / "transcripts")
                     _log(f"transcript_ok vod={vod_path} transcript={transcript_path}")
                     subtitle_dir = root / "output" / "subtitles" / batch_id
+                    subtitle_dir.mkdir(parents=True, exist_ok=True)
                     subtitles_generated_local = 0
+                    srt_name_usage: dict[str, int] = {}
+                    subtitle_index_rows: list[dict[str, str]] = []
                     for c in clip_objs:
+                        base_label = str(c.get("display_name") or c.get("clip_id") or "clip").strip()
+                        base_name = _safe_name_token(base_label, limit=120)
+                        if not base_name:
+                            base_name = "clip"
+                        idx = srt_name_usage.get(base_name, 0) + 1
+                        srt_name_usage[base_name] = idx
+                        subtitle_name = base_name if idx == 1 else f"{base_name}_{idx}"
+                        srt_path = subtitle_dir / f"{subtitle_name}.srt"
                         ok = generate_srt_for_clip(
                             transcript_path,
                             float(c.get("start_seconds", 0.0)),
                             float(c.get("end_seconds", 0.0)),
-                            subtitle_dir / f"{c['clip_id']}.srt",
+                            srt_path,
                             captions_cfg,
                         )
                         if ok:
-                            c["subtitle_path"] = str((subtitle_dir / f"{c['clip_id']}.srt").resolve())
+                            resolved_srt = str(srt_path.resolve())
+                            c["subtitle_path"] = resolved_srt
                             subtitles_generated_local += 1
+                            subtitle_index_rows.append(
+                                {
+                                    "clip_id": str(c.get("clip_id", "")),
+                                    "display_name": str(c.get("display_name", "")),
+                                    "srt_file": srt_path.name,
+                                    "srt_path": resolved_srt,
+                                }
+                            )
+                    index_path = subtitle_dir / "index.csv"
+                    with index_path.open("w", encoding="utf-8", newline="") as f_idx:
+                        writer = csv.DictWriter(f_idx, fieldnames=["clip_id", "display_name", "srt_file", "srt_path"])
+                        writer.writeheader()
+                        writer.writerows(subtitle_index_rows)
                     return subtitles_generated_local
 
         try:
@@ -1436,6 +1780,7 @@ def _parse_manifest(manifest_path: Path) -> tuple[str, list[ClipPlan]]:
                 ClipPlan(
                     clip_id=str(c["clip_id"]),
                     display_name=str(c.get("display_name", c.get("clip_id", ""))),
+                    timeline_name=str(c.get("timeline_name", "") or ""),
                     source_path=str(c["source_path"]),
                     start_seconds=start,
                     end_seconds=end,
@@ -1679,6 +2024,79 @@ def _apply_preset_to_selected_clip(resolve: Any, preset: dict[str, Any], scope_m
     return True, "Applied preset to selected clip"
 
 
+def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, Any]]:
+    pm = _safe_call(resolve, "GetProjectManager")
+    project = _safe_call(pm, "GetCurrentProject") if pm else None
+    if not project:
+        return False, "No open project", {}
+    timeline = _safe_call(project, "GetCurrentTimeline")
+    if not timeline:
+        return False, "No active timeline", {}
+
+    item = _safe_call(timeline, "GetCurrentVideoItem")
+    if not item:
+        return False, "No selected/current clip", {}
+
+    media_item = _safe_call(item, "GetMediaPoolItem")
+    if not media_item:
+        return False, "Selected clip has no media source", {}
+
+    props = _safe_call(media_item, "GetClipProperty", default={}) or {}
+    source_path = str(props.get("File Path") or "").strip()
+    if not source_path:
+        return False, "Could not read source file path", {}
+
+    fps = _fps_from_project(project)
+
+    def _to_int(v: Any) -> int | None:
+        try:
+            return int(float(v))
+        except Exception:
+            return None
+
+    src_in = None
+    src_out = None
+    for meth in ("GetSourceStartFrame", "GetLeftOffset"):
+        val = _to_int(_safe_call(item, meth, default=None))
+        if val is not None:
+            src_in = val
+            break
+    for meth in ("GetSourceEndFrame", "GetRightOffset"):
+        val = _to_int(_safe_call(item, meth, default=None))
+        if val is not None:
+            src_out = val
+            break
+
+    # Resolve fallback variants
+    if src_in is None or src_out is None:
+        all_props = _safe_call(item, "GetProperty", default={}) or {}
+        if src_in is None:
+            src_in = _to_int(all_props.get("Source Start"))
+        if src_out is None:
+            src_out = _to_int(all_props.get("Source End"))
+
+    if src_in is None or src_out is None or src_out <= src_in:
+        tl_start = _to_int(_safe_call(item, "GetStart", default=None))
+        tl_end = _to_int(_safe_call(item, "GetEnd", default=None))
+        if tl_start is None or tl_end is None or tl_end <= tl_start:
+            return False, "Could not read selected clip range", {}
+        src_in = 0
+        src_out = max(1, tl_end - tl_start)
+
+    clip_start = max(0.0, float(src_in) / max(1, fps))
+    clip_end = max(clip_start + 0.1, float(src_out) / max(1, fps))
+    return True, "ok", {
+        "project": project,
+        "timeline": timeline,
+        "media_pool": _safe_call(project, "GetMediaPool"),
+        "source_path": source_path,
+        "clip_start": clip_start,
+        "clip_end": clip_end,
+        "timeline_name": str(_safe_call(timeline, "GetName", default="timeline")),
+        "item_name": str(_safe_call(item, "GetName", default="clip")),
+    }
+
+
 def _create_timeline_for_clip_with_preset(
     media_pool: Any,
     name: str,
@@ -1741,6 +2159,26 @@ def _ensure_batch_folder(media_pool: Any, batch_id: str) -> Any:
 
     _safe_call(media_pool, "SetCurrentFolder", batch_folder)
     return batch_folder
+
+
+def _ensure_shorteditor_subfolder(media_pool: Any, subfolder_name: str) -> Any:
+    root = _safe_call(media_pool, "GetRootFolder", required=True)
+    for f in _safe_call(root, "GetSubFolderList", default=[]) or []:
+        if _safe_call(f, "GetName", default="") == "ShortEditor":
+            short_editor = f
+            break
+    else:
+        short_editor = _safe_call(media_pool, "AddSubFolder", root, "ShortEditor", required=True)
+
+    for f in _safe_call(short_editor, "GetSubFolderList", default=[]) or []:
+        if _safe_call(f, "GetName", default="") == subfolder_name:
+            folder = f
+            break
+    else:
+        folder = _safe_call(media_pool, "AddSubFolder", short_editor, subfolder_name, required=True)
+
+    _safe_call(media_pool, "SetCurrentFolder", folder)
+    return folder
 
 
 def _set_shorts_render_defaults(project: Any, output_dir: Path, timeline_name: str) -> None:
@@ -2022,8 +2460,10 @@ def _build_from_manifest(
             warnings.append(f"Invalid range for {plan.clip_id}")
             continue
 
-        display = _safe_name_token(plan.display_name or plan.clip_id, limit=84)
-        timeline_name = f"{batch_id}__{display}"
+        timeline_name = str(plan.timeline_name or "").strip()
+        if not timeline_name:
+            display = _safe_name_token(plan.display_name or plan.clip_id, limit=84)
+            timeline_name = f"{batch_id}__{display}"
         if timeline_name in used_timeline_names:
             dup_idx = 2
             base_name = timeline_name
@@ -2042,13 +2482,18 @@ def _build_from_manifest(
             sub_path = Path(plan.subtitle_path)
             if not sub_path.is_absolute():
                 sub_path = (root / sub_path).resolve()
-            ok_sub, sub_msg = _import_subtitles_to_timeline(project, media_pool, tl, sub_path)
-            if ok_sub:
-                subtitle_imported += 1
-                _log(f"subtitle_imported clip={plan.clip_id} path={sub_path} msg={sub_msg}")
+            if not sub_path.exists():
+                warnings.append(f"Subtitle file missing for media pool import: {plan.clip_id}")
+                _log(f"subtitle_media_pool_missing clip={plan.clip_id} path={sub_path}")
             else:
-                warnings.append(f"Subtitle import failed for {plan.clip_id}: {sub_msg}")
-                _log(f"subtitle_import_failed clip={plan.clip_id} path={sub_path} msg={sub_msg}")
+                _ensure_batch_folder(media_pool, batch_id)
+                imported_sub = _ensure_media_item(media_pool, sub_path)
+                if imported_sub is None:
+                    warnings.append(f"Could not import subtitle in batch folder: {plan.clip_id}")
+                    _log(f"subtitle_media_pool_import_failed clip={plan.clip_id} path={sub_path}")
+                else:
+                    subtitle_imported += 1
+                    _log(f"subtitle_media_pool_imported clip={plan.clip_id} path={sub_path}")
         elif require_subtitles:
             warnings.append(f"Subtitle missing in manifest for {plan.clip_id}")
 
@@ -2114,6 +2559,7 @@ def run() -> int:
     text_wave_index = 0
     loading_image_label = None
     loading_mode = "text"
+    loader_closing = False
     frame_job = None
     phase_job = None
     anim_frames: dict[str, list[Any]] = {"idle": [], "suck": [], "digest": [], "dance": []}
@@ -2173,6 +2619,14 @@ def run() -> int:
         loading_progress_fill = loading_progress_canvas.create_rectangle(3, 3, 3, 13, fill="#6D4DFF", outline="#6D4DFF", width=0)
         _log("loader_bar_canvas_init_ok")
 
+        def _loader_alive() -> bool:
+            if loading_root is None:
+                return False
+            try:
+                return bool(loading_root.winfo_exists())
+            except Exception:
+                return False
+
         def build_text_wave_items(message: str) -> None:
             nonlocal loading_text_items
             if loading_text_canvas is None:
@@ -2194,9 +2648,9 @@ def run() -> int:
 
         def animate_text_wave() -> None:
             nonlocal text_wave_job, text_wave_index
-            if loading_root is None or loading_text_canvas is None:
+            if loading_text_canvas is None or not loading_text_items:
                 return
-            if not loading_root.winfo_exists() or not loading_text_items:
+            if not _loader_alive():
                 return
             base_y = 18
             non_space_indices = [i for i, ch in enumerate(text_message) if ch != " "]
@@ -2223,9 +2677,9 @@ def run() -> int:
 
         def animate_tick() -> None:
             nonlocal frame_job
-            if loading_root is None or loading_image_label is None:
+            if loading_image_label is None:
                 return
-            if not loading_root.winfo_exists():
+            if not _loader_alive():
                 return
             name = anim_state["name"]
             frames = anim_frames.get(name, [])
@@ -2264,7 +2718,7 @@ def run() -> int:
 
             def step(index: int) -> None:
                 nonlocal phase_job
-                if loading_root is None or not loading_root.winfo_exists() or not anim_state.get("loop", True):
+                if not _loader_alive() or not anim_state.get("loop", True):
                     return
                 phase_name, duration = phases[index % len(phases)]
                 _log(f"loader_phase={phase_name}")
@@ -2276,40 +2730,67 @@ def run() -> int:
         def stop_phase_loop() -> None:
             nonlocal phase_job, frame_job, text_wave_job
             anim_state["loop"] = False
+            root_ref = loading_root
+            if root_ref is None:
+                phase_job = None
+                frame_job = None
+                text_wave_job = None
+                return
             if phase_job is not None:
                 try:
-                    loading_root.after_cancel(phase_job)
+                    root_ref.after_cancel(phase_job)
                 except Exception:
                     pass
                 phase_job = None
             if frame_job is not None:
                 try:
-                    loading_root.after_cancel(frame_job)
+                    root_ref.after_cancel(frame_job)
                 except Exception:
                     pass
                 frame_job = None
             if text_wave_job is not None:
                 try:
-                    loading_root.after_cancel(text_wave_job)
+                    root_ref.after_cancel(text_wave_job)
                 except Exception:
                     pass
                 text_wave_job = None
 
+        def _safe_destroy_loader() -> None:
+            nonlocal loading_root, loader_closing
+            if loader_closing:
+                return
+            loader_closing = True
+            stop_phase_loop()
+            root_ref = loading_root
+            loading_root = None
+            if root_ref is None:
+                _log("kirby_loader_end")
+                return
+            try:
+                if root_ref.winfo_exists():
+                    root_ref.destroy()
+            except Exception:
+                pass
+            _log("kirby_loader_end")
+
         def final_dance_then_close() -> None:
-            if loading_root is None:
+            if not _loader_alive():
                 return
             _log("loader_final_dance_start")
-            set_anim("dance")
+            try:
+                set_anim("dance")
+            except Exception:
+                _safe_destroy_loader()
+                return
 
             def close_now() -> None:
-                nonlocal loading_root
-                stop_phase_loop()
-                if loading_root is not None and loading_root.winfo_exists():
-                    loading_root.destroy()
-                    loading_root = None
-                _log("kirby_loader_end")
+                _safe_destroy_loader()
 
-            loading_root.after(2000, close_now)
+            try:
+                if loading_root is not None:
+                    loading_root.after(2000, close_now)
+            except Exception:
+                _safe_destroy_loader()
 
         loading_root._set_anim = set_anim  # type: ignore[attr-defined]
         loading_root._start_phase_loop = start_kirby_phase_loop  # type: ignore[attr-defined]
@@ -2391,7 +2872,14 @@ def run() -> int:
                 pass
     if auto_vod is None:
         if loading_root is not None:
-            loading_root.destroy()
+            stopper = getattr(loading_root, "_stop_phase_loop", None)
+            if callable(stopper):
+                stopper()
+            try:
+                loading_root.destroy()
+            except Exception:
+                pass
+            loading_root = None
         raise RuntimeError("No VOD selected. Select a VOD to continue.")
 
     set_loading("Generating manifest...")
@@ -2405,7 +2893,12 @@ def run() -> int:
 
     def _manifest_worker() -> None:
         try:
-            manifest_result["manifest"] = _generate_manifest_for_vod(root, auto_vod, generate_subtitles=False)
+            manifest_result["manifest"] = _generate_manifest_for_vod(
+                root,
+                auto_vod,
+                generate_subtitles=False,
+                use_transcript_for_selection=False,
+            )
         except Exception as exc:
             manifest_result["error"] = {
                 "message": str(exc),
@@ -2432,7 +2925,14 @@ def run() -> int:
         fallback_manifest = _latest_manifest(root / "output" / "manifests")
         if fallback_manifest is None:
             if loading_root is not None:
-                loading_root.destroy()
+                stopper = getattr(loading_root, "_stop_phase_loop", None)
+                if callable(stopper):
+                    stopper()
+                try:
+                    loading_root.destroy()
+                except Exception:
+                    pass
+                loading_root = None
             raise RuntimeError(f"Manifest generation failed and no fallback manifest found: {err.get('message', err)}")
         default_manifest = fallback_manifest
         used_manifest_fallback = True
@@ -2462,7 +2962,14 @@ def run() -> int:
             time.sleep(0.03)
     elif loading_root is not None:
         set_loading_progress("Done", 100)
-        loading_root.destroy()
+        stopper = getattr(loading_root, "_stop_phase_loop", None)
+        if callable(stopper):
+            stopper()
+        try:
+            loading_root.destroy()
+        except Exception:
+            pass
+        loading_root = None
         _log("kirby_loader_end")
     _log(f"Default manifest: {default_manifest}")
 
@@ -2481,6 +2988,7 @@ def run() -> int:
         "plan_map": {},
         "detected_vod": auto_vod,
         "used_manifest_fallback": used_manifest_fallback,
+        "use_transcript_for_selection": False,
     }
 
     def on_generate(params: dict[str, Any]) -> dict[str, Any] | str:
@@ -2493,6 +3001,7 @@ def run() -> int:
         render_master = bool(params["render_master"])
         preset_id = str(params["preset_id"])
         transcript_query = str(params["query"])
+        use_transcript_for_selection = bool(params.get("use_transcript_for_selection", False))
         strict_manifest = bool(params.get("strict_manifest", False))
         require_subtitles = bool(params.get("require_subtitles", False))
         vod_dir_raw = str(params.get("vod_dir", "")).strip()
@@ -2508,12 +3017,36 @@ def run() -> int:
             if detected_vod is None or not Path(detected_vod).exists():
                 return {"message": "Auto Subtitles requires a detected VOD source. Select a clip in Resolve and relaunch.", "warnings": []}
             try:
-                manifest_path = _generate_manifest_for_vod(root, Path(detected_vod), generate_subtitles=True)
+                manifest_path = _generate_manifest_for_vod(
+                    root,
+                    Path(detected_vod),
+                    generate_subtitles=True,
+                    use_transcript_for_selection=use_transcript_for_selection,
+                )
                 session["manifest"] = manifest_path
                 session["used_manifest_fallback"] = False
+                session["use_transcript_for_selection"] = use_transcript_for_selection
                 _log(f"Regenerated manifest with subtitles: {manifest_path}")
             except Exception as exc:
                 msg = f"Auto subtitle manifest generation failed: {exc}"
+                _log(msg)
+                return {"message": msg, "warnings": [msg]}
+        elif use_transcript_for_selection:
+            if detected_vod is None or not Path(detected_vod).exists():
+                return {"message": "Transcript selection requires a detected VOD source. Select a clip in Resolve and relaunch.", "warnings": []}
+            try:
+                manifest_path = _generate_manifest_for_vod(
+                    root,
+                    Path(detected_vod),
+                    generate_subtitles=False,
+                    use_transcript_for_selection=True,
+                )
+                session["manifest"] = manifest_path
+                session["used_manifest_fallback"] = False
+                session["use_transcript_for_selection"] = True
+                _log(f"Regenerated manifest with transcript selection: {manifest_path}")
+            except Exception as exc:
+                msg = f"Transcript selection manifest generation failed: {exc}"
                 _log(msg)
                 return {"message": msg, "warnings": [msg]}
 
@@ -2558,12 +3091,32 @@ def run() -> int:
         preset_name = str(params["render_preset"])
         preset_id = str(params["preset_id"])
         transcript_query = str(params["query"])
+        use_transcript_for_selection = bool(params.get("use_transcript_for_selection", False))
         vod_dir_raw = str(params.get("vod_dir", "")).strip()
         user_vod_dir = Path(vod_dir_raw) if vod_dir_raw else None
         detected_vod = session.get("detected_vod")
         selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_id, {}))
         if not selected_preset:
             return {"message": f"Preset not found: {preset_id}", "warnings": []}
+
+        if use_transcript_for_selection:
+            if detected_vod is None or not Path(detected_vod).exists():
+                return {"message": "Transcript selection requires a detected VOD source. Select a clip in Resolve and relaunch.", "warnings": []}
+            try:
+                manifest_path = _generate_manifest_for_vod(
+                    root,
+                    Path(detected_vod),
+                    generate_subtitles=False,
+                    use_transcript_for_selection=True,
+                )
+                session["manifest"] = manifest_path
+                session["used_manifest_fallback"] = False
+                session["use_transcript_for_selection"] = True
+                _log(f"Regenerated manifest for update with transcript selection: {manifest_path}")
+            except Exception as exc:
+                msg = f"Transcript selection manifest generation failed: {exc}"
+                _log(msg)
+                return {"message": msg, "warnings": [msg]}
 
         batch_id, plan_map, timelines, warnings = _build_from_manifest(
             root,

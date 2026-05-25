@@ -1,0 +1,134 @@
+{
+  "batch_id": "batch_20260525_034356_b8cf66",
+  "source_vods": [
+    "E:\\2026-05-22 20-54-13.mp4"
+  ],
+  "clips": [
+    {
+      "clip_id": "2026-05-22 20-54-13__chapter_0001",
+      "display_name": "Chapitre 1",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 6777.183,
+      "end_seconds": 6812.183,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_034356_b8cf66__Chapitre 1"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0000",
+      "display_name": "Auto 1",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 2823.0,
+      "end_seconds": 2863.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.6163,
+      "reason": "No chapters found: audio peak + activity (hook=0.93; voice_track=2;context=[5];intro_skip=8m)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_034356_b8cf66__Auto 1"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0001",
+      "display_name": "Auto 2",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 4843.0,
+      "end_seconds": 4883.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.6076,
+      "reason": "No chapters found: audio peak + activity (hook=1.35; voice_track=2;context=[5];intro_skip=8m)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_034356_b8cf66__Auto 2"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0002",
+      "display_name": "Auto 3",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 6517.0,
+      "end_seconds": 6557.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.5404,
+      "reason": "No chapters found: audio peak + activity (hook=0.96; voice_track=2;context=[5];intro_skip=8m)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_034356_b8cf66__Auto 3"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0003",
+      "display_name": "Auto 4",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 5041.0,
+      "end_seconds": 5081.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.5327,
+      "reason": "No chapters found: audio peak + activity (hook=1.03; voice_track=2;context=[5];intro_skip=8m)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_034356_b8cf66__Auto 4"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0004",
+      "display_name": "Auto 5",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 7215.0,
+      "end_seconds": 7255.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.5237,
+      "reason": "No chapters found: audio peak + activity (hook=0.60; voice_track=2;context=[5];intro_skip=8m)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_034356_b8cf66__Auto 5"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0005",
+      "display_name": "Auto 6",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 2681.0,
+      "end_seconds": 2721.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.5016,
+      "reason": "No chapters found: audio peak + activity (hook=0.45; voice_track=2;context=[5];intro_skip=8m)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_034356_b8cf66__Auto 6"
+    },
+    {
+      "clip_id": "2026-05-22 20-54-13__fallback_0006",
+      "display_name": "Auto 7",
+      "source_path": "E:\\2026-05-22 20-54-13.mp4",
+      "start_seconds": 1091.0,
+      "end_seconds": 1131.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.4676,
+      "reason": "No chapters found: audio peak + activity (hook=0.52; voice_track=2;context=[5];intro_skip=8m)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260525_034356_b8cf66__Auto 7"
+    }
+  ],
+  "pipeline_version": "0.1.0",
+  "warnings": [
+    "2026-05-22 20-54-13.mp4: Skipped chapter 0 at 0.000s: auto_start_chapter_0"
+  ],
+  "quota_summary": [
+    {
+      "vod": "2026-05-22 20-54-13.mp4",
+      "target_quota": 8,
+      "max_quota": 9,
+      "chapter_used": 1,
+      "fallback_added": 7,
+      "total_selected": 8
+    }
+  ]
+}

@@ -99,6 +99,16 @@ def _clamp(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(value, max_value))
 
 
+def _overlap_ratio_from_ranges(a_start: float, a_end: float, b_start: float, b_end: float) -> float:
+    left = max(a_start, b_start)
+    right = min(a_end, b_end)
+    if right <= left:
+        return 0.0
+    inter = right - left
+    shortest = max(0.001, min(a_end - a_start, b_end - b_start))
+    return inter / shortest
+
+
 def build_chapter_candidates(vod: VodManifest, cfg: dict) -> list[ClipCandidate]:
     video_cfg = cfg["video"]
     min_len = float(video_cfg["min_clip_seconds"])
