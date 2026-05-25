@@ -1330,7 +1330,7 @@ def _ask_user_inputs(
                     else:
                         _ensure_shorteditor_subfolder(media_pool, "Manual")
 
-                    imported_item = _ensure_media_item(media_pool, out_srt)
+                    imported_item, import_status = _ensure_media_item_with_status(media_pool, out_srt)
                     if imported_item is None:
                         result_box["result"] = {
                             "ok": True,
@@ -1340,6 +1340,12 @@ def _ask_user_inputs(
                         return
 
                     target_folder = active_batch_id if active_batch_id else "Manual"
+                    if import_status == "already_exists":
+                        result_box["result"] = {
+                            "ok": True,
+                            "message": f"SRT already exists in Media Pool (not re-imported to {target_folder}): {out_srt.name}",
+                        }
+                        return
                     result_box["result"] = {
                         "ok": True,
                         "message": f"SRT ready and imported to Media Pool/{target_folder}: {out_srt.name}",
@@ -1829,6 +1835,16 @@ def _ensure_media_item(media_pool: Any, source_path: Path) -> Any | None:
     if imported and len(imported) > 0:
         return imported[0]
     return None
+
+
+def _ensure_media_item_with_status(media_pool: Any, source_path: Path) -> tuple[Any | None, str]:
+    existing = _find_media_pool_item_by_path(media_pool, source_path)
+    if existing is not None:
+        return existing, "already_exists"
+    imported = _safe_call(media_pool, "ImportMedia", [str(source_path)], default=[])
+    if imported and len(imported) > 0:
+        return imported[0], "imported"
+    return None, "failed"
 
 
 def _append_clip_range(
@@ -2518,13 +2534,17 @@ def _build_from_manifest(
                 _log(f"subtitle_media_pool_missing clip={plan.clip_id} path={sub_path}")
             else:
                 _ensure_batch_folder(media_pool, batch_id)
-                imported_sub = _ensure_media_item(media_pool, sub_path)
+                imported_sub, import_status = _ensure_media_item_with_status(media_pool, sub_path)
                 if imported_sub is None:
                     warnings.append(f"Could not import subtitle in batch folder: {plan.clip_id}")
                     _log(f"subtitle_media_pool_import_failed clip={plan.clip_id} path={sub_path}")
                 else:
                     subtitle_imported += 1
-                    _log(f"subtitle_media_pool_imported clip={plan.clip_id} path={sub_path}")
+                    if import_status == "already_exists":
+                        warnings.append(f"Subtitle already exists in Media Pool (not re-imported to batch folder): {plan.clip_id}")
+                        _log(f"subtitle_media_pool_already_exists clip={plan.clip_id} path={sub_path}")
+                    else:
+                        _log(f"subtitle_media_pool_imported clip={plan.clip_id} path={sub_path}")
         elif require_subtitles:
             warnings.append(f"Subtitle missing in manifest for {plan.clip_id}")
 
