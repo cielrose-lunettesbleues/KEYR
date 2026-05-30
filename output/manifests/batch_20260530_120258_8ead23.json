@@ -1,0 +1,188 @@
+{
+  "batch_id": "batch_20260530_120258_8ead23",
+  "source_vods": [
+    "E:\\2026-05-25 21-26-06.mp4"
+  ],
+  "clips": [
+    {
+      "clip_id": "2026-05-25 21-26-06__chapter_0001",
+      "display_name": "Chapitre 1",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 1979.683,
+      "end_seconds": 2014.683,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Chapitre 1"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0000",
+      "display_name": "Auto 1",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 10376.15,
+      "end_seconds": 10411.85,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.8655,
+      "reason": "No chapters found: audio peak + activity (hook=1.50; transcript_discovery;funny=1;clivant=3;etonnant=1;matched=bugu,c'est,est,gros);trim=voice",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 1"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0001",
+      "display_name": "Auto 2",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 4327.0,
+      "end_seconds": 4367.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.8223,
+      "reason": "No chapters found: audio peak + activity (hook=0.76; voice_track=2;context=[5];intro_skip=8m;clivant=1;matched=c'est,chance,contre,coup)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 2"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0002",
+      "display_name": "Auto 3",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 9356.15,
+      "end_seconds": 9396.08,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.8032,
+      "reason": "No chapters found: audio peak + activity (hook=1.20; transcript_discovery;clivant=3;matched=bon,c'est,doit,fais);trim=voice",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 3"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0003",
+      "display_name": "Auto 4",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 1492.39,
+      "end_seconds": 1532.39,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.8024,
+      "reason": "No chapters found: audio peak + activity (hook=1.50; transcript_discovery;funny=1;clivant=2;etonnant=1;matched=apr,bah,c'est,est)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 4"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0005",
+      "display_name": "Auto 5",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 1176.92,
+      "end_seconds": 1216.92,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7882,
+      "reason": "No chapters found: audio peak + activity (hook=1.21; transcript_discovery;funny=1;etonnant=1;matched=bien,c'est,compte,content)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 5"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0006",
+      "display_name": "Auto 6",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 3436.0,
+      "end_seconds": 3476.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7877,
+      "reason": "No chapters found: audio peak + activity (hook=0.86; voice_track=2;context=[5];intro_skip=8m;clivant=1;matched=aura,aux,bien,c'est)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 6"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0011",
+      "display_name": "Auto 7",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 9416.77,
+      "end_seconds": 9456.77,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7715,
+      "reason": "No chapters found: audio peak + activity (hook=1.01; transcript_discovery;clivant=3;matched=bon,c'est,compte,coup)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 7"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0013",
+      "display_name": "Auto 8",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 7857.65,
+      "end_seconds": 7896.96,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7645,
+      "reason": "No chapters found: audio peak + activity (hook=1.45; transcript_discovery;clivant=3;matched=j'ai,main,nul,pourquoi);trim=voice",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 8"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0019",
+      "display_name": "Auto 9",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 4370.0,
+      "end_seconds": 4410.0,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7432,
+      "reason": "No chapters found: audio peak + activity (hook=1.00; voice_track=2;context=[5];intro_skip=8m;matched=bah,bon,c'est,est)",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 9"
+    },
+    {
+      "clip_id": "2026-05-25 21-26-06__fallback_0020",
+      "display_name": "Auto 10",
+      "source_path": "E:\\2026-05-25 21-26-06.mp4",
+      "start_seconds": 9043.65,
+      "end_seconds": 9083.47,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7417,
+      "reason": "No chapters found: audio peak + activity (hook=0.75; transcript_discovery;clivant=3;etonnant=2;matched=bien,bon,est,fait);trim=voice",
+      "overflow": false,
+      "subtitle_path": "",
+      "timeline_name": "batch_20260530_120258_8ead23__Auto 10"
+    }
+  ],
+  "pipeline_version": "0.1.0",
+  "meta": {
+    "source_vod_path": "E:\\2026-05-25 21-26-06.mp4",
+    "preset_id": "",
+    "generated_with_subtitles": false,
+    "use_transcript_for_selection": false,
+    "transcript_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\transcripts\\2026-05-25 21-26-06.json",
+    "transcript_exists_pre_generation": true
+  },
+  "warnings": [
+    "2026-05-25 21-26-06.mp4: Skipped chapter 0 at 0.000s: auto_start_chapter_0",
+    "2026-05-25 21-26-06__fallback_0000: dead-air trim 10374.53-10414.53s -> 10376.15-10411.85s",
+    "2026-05-25 21-26-06__fallback_0002: dead-air trim 9356.08-9396.08s -> 9356.15-9396.08s",
+    "2026-05-25 21-26-06__fallback_0013: dead-air trim 7856.96-7896.96s -> 7857.65-7896.96s",
+    "2026-05-25 21-26-06__fallback_0020: dead-air trim 9043.47-9083.47s -> 9043.65-9083.47s"
+  ],
+  "quota_summary": [
+    {
+      "vod": "2026-05-25 21-26-06.mp4",
+      "target_quota": 11,
+      "max_quota": 13,
+      "chapter_used": 1,
+      "fallback_added": 10,
+      "total_selected": 11
+    }
+  ]
+}

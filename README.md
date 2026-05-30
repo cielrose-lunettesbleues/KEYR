@@ -89,6 +89,6 @@ Or use:
 - Presets are stored in `config/resolve_presets.json`.
 - The app can edit and save presets from Resolve UI (`Edit selected preset before run?`).
 - Default includes:
-  - `VALO_FIXED_SPLIT_LEFTCAM_V1` (fixed split, gameplay top + cam bottom-left)
-  - `GAME_STANDARD_V1`
-  - `REACT_STANDARD_V1`
+  - `Valorant Preset` (fixed split, gameplay top + cam)
+  - `Jeux`
+  - `Just chatting`

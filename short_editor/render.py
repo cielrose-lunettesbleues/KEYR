@@ -8,6 +8,9 @@ from pathlib import Path
 from .models import ClipCandidate
 
 
+DEFAULT_FPS = 60
+
+
 def _probe_audio_stream_count(source: Path) -> int:
     cmd = [
         "ffprobe",
@@ -108,7 +111,7 @@ def render_clips_ffmpeg(clips: list[ClipCandidate], cfg: dict, output_dir: Path)
 
     w = int(cfg["video"]["output_width"])
     h = int(cfg["video"]["output_height"])
-    fps = int(cfg["video"]["output_fps"])
+    fps = int(cfg.get("video", {}).get("output_fps", DEFAULT_FPS) or DEFAULT_FPS)
 
     # Center-crop landscape to 9:16 then scale.
     vf = f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale={w}:{h},fps={fps}"

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-25T04:18:46+00:00",
+  "updated_at": "2026-05-30T14:14:23",
   "categories": {
     "drole": {
       "amour": 0.9,
@@ -98,7 +98,19 @@
       "vas": 1.8,
       "vocal": 1.8,
       "vois": 0.9,
-      "vrai": 0.9
+      "vrai": 0.9,
+      "ptdr": 3.0,
+      "abuse": 3.0,
+      "hilarant": 3.0,
+      "jpp": 3.0,
+      "mais non": 3.0,
+      "n'importe quoi": 3.0,
+      "quel nul": 3.0,
+      "fail": 3.0,
+      "wesh": 2.7,
+      "catastrophe": 2.7,
+      "n'importe": 2.7,
+      "nul": 2.4
     },
     "clivant": {
       "1000": 0.9,
@@ -173,7 +185,7 @@
       "j'ai": 2.7,
       "j'avais": -0.1,
       "j'pouche": -0.7,
-      "jamais": -0.7,
+      "jamais": 3.0,
       "jeu": 0.8,
       "jupeur": 0.6,
       "juste": 1.8,
@@ -258,7 +270,7 @@
       "tre": 0.6,
       "trop": 3.0,
       "trouve": 0.9,
-      "truc": 0.9,
+      "truc": -0.4,
       "trucs": 1.8,
       "tune": 1.2,
       "vendre": 1.0,
@@ -267,11 +279,26 @@
       "voix": 1.5,
       "vrai": 1.8,
       "vraiment": 3.0,
-      "waste": 0.9
+      "waste": 0.9,
+      "debat": 3.0,
+      "scam": 3.0,
+      "surcote": 3.0,
+      "eclate": 3.0,
+      "honteux": 3.0,
+      "faut nerf": 3.0,
+      "merite pas": 3.0,
+      "arretez": 2.7,
+      "cancer": 2.7,
+      "injuste": 2.7,
+      "op": 2.7,
+      "toujours": 2.7,
+      "nerf": 2.7,
+      "faut": 2.4,
+      "merite": 2.4
     },
     "etonnant": {
       "regardez": 2.0,
-      "ça": 1.0
+      "\u00e7a": 1.0
     }
   }
 }

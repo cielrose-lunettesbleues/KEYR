@@ -9,6 +9,7 @@ from .clip_builder import (
     build_chapter_candidates_with_skips,
     compute_quota,
     discover_fallback_candidates,
+    trim_dead_air_on_boundaries,
     tag_overflow,
 )
 from .ingest import probe_vod
@@ -103,6 +104,7 @@ def run_batch(cfg: dict) -> dict:
             chapter_clips.extend(fallback_selected)
 
         chapter_clips = tag_overflow(chapter_clips, max_quota)
+        warnings.extend(trim_dead_air_on_boundaries(manifest, chapter_clips, cfg, dirs["work"]))
 
         captions_cfg = cfg.get("captions", {})
         captions_enabled = bool(captions_cfg.get("enabled", True))

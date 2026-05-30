@@ -11,12 +11,19 @@ import time
 import threading
 import traceback
 import warnings
+import subprocess
 from contextlib import redirect_stderr
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 import importlib
+
+
+DEFAULT_FPS = 60
+STANDALONE_CAPTION_TEMPLATE_NAME = "ShortEditor Caption"
+STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME = "AutoSubs Caption"
+SUBTITLE_TEMPLATE_AUTO_LABEL = "Auto-detect (Recommended)"
 
 def _load_resolve() -> Any:
     # Strategy 1: direct module import (works on many installs)
@@ -146,23 +153,23 @@ def _default_presets() -> dict[str, Any]:
         "profiles": {
             "valo": {
                 "label": "Valo",
-                "active_preset": "VALO_FIXED_SPLIT_LEFTCAM_V1",
+                "active_preset": "Valorant Preset",
                 "max_transcript_clip_seconds": 45,
             },
             "jeu": {
                 "label": "Jeu",
-                "active_preset": "GAME_STANDARD_V1",
+                "active_preset": "Jeux",
                 "max_transcript_clip_seconds": 45,
             },
             "react": {
                 "label": "React",
-                "active_preset": "REACT_STANDARD_V1",
+                "active_preset": "Just chatting",
                 "max_transcript_clip_seconds": 45,
             },
         },
         "presets": {
-            "VALO_FIXED_SPLIT_LEFTCAM_V1": {
-                "name": "VALO Fixed Split Left Cam",
+            "Valorant Preset": {
+                "name": "Valorant Preset",
                 "profile": "valo",
                 "mode": "fixed_split",
                 "layers_count": 2,
@@ -189,16 +196,42 @@ def _default_presets() -> dict[str, Any]:
                     "crop_right": 0.0,
                 },
             },
-            "GAME_STANDARD_V1": {
-                "name": "Game Standard",
-                "profile": "jeu",
-                "mode": "single",
-                "layers_count": 1,
-                "safe_padding": 0.04,
+            "Jeux": {
+                "name": "Jeux",
+                "profile": "valo",
+                "mode": "fixed_split",
+                "safe_padding": 0.06,
+                "max_clip_seconds": 45,
+                "gameplay": {
+                    "zoom_x": 1.78,
+                    "zoom_y": 1.78,
+                    "pan": 117.72,
+                    "tilt": 1388.18,
+                    "crop_top": 0.0,
+                    "crop_bottom": 0.0,
+                    "crop_left": 0.0,
+                    "crop_right": 0.0,
+                },
+                "camera": {
+                    "zoom_x": 3.74,
+                    "zoom_y": 3.74,
+                    "pan": -1460.0,
+                    "tilt": 448.62,
+                    "crop_top": 0.0,
+                    "crop_bottom": 0.42,
+                    "crop_left": 0.0,
+                    "crop_right": 0.0,
+                },
+            },
+            "Just chatting": {
+                "name": "Just chatting",
+                "profile": "react",
+                "mode": "fixed_split",
+                "safe_padding": 0.06,
                 "max_clip_seconds": 45,
                 "single": {
-                    "zoom_x": 1.0,
-                    "zoom_y": 1.0,
+                    "zoom_x": 0.1,
+                    "zoom_y": 0.1,
                     "pan": 0.0,
                     "tilt": 0.0,
                     "crop_top": 0.0,
@@ -206,21 +239,23 @@ def _default_presets() -> dict[str, Any]:
                     "crop_left": 0.0,
                     "crop_right": 0.0,
                 },
-            },
-            "REACT_STANDARD_V1": {
-                "name": "React Standard",
-                "profile": "react",
-                "mode": "single",
-                "layers_count": 1,
-                "safe_padding": 0.04,
-                "max_clip_seconds": 45,
-                "single": {
-                    "zoom_x": 1.0,
-                    "zoom_y": 1.0,
-                    "pan": 0.0,
-                    "tilt": 0.0,
+                "gameplay": {
+                    "zoom_x": 2.62,
+                    "zoom_y": 2.62,
+                    "pan": -1.0,
+                    "tilt": 1.0,
                     "crop_top": 0.0,
                     "crop_bottom": 0.0,
+                    "crop_left": 0.0,
+                    "crop_right": 0.0,
+                },
+                "camera": {
+                    "zoom_x": 3.74,
+                    "zoom_y": 3.74,
+                    "pan": 1.0,
+                    "tilt": 1.0,
+                    "crop_top": 0.0,
+                    "crop_bottom": 0.42,
                     "crop_left": 0.0,
                     "crop_right": 0.0,
                 },
@@ -239,7 +274,39 @@ def _load_or_init_presets(root: Path) -> dict[str, Any]:
             f.write("\n")
         return data
     with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+
+    presets = data.get("presets", {}) if isinstance(data, dict) else {}
+    profiles = data.get("profiles", {}) if isinstance(data, dict) else {}
+    if not isinstance(presets, dict):
+        presets = {}
+    if not isinstance(profiles, dict):
+        profiles = {}
+
+    preset_ids = list(presets.keys())
+    if preset_ids:
+        fallback_preset = preset_ids[0]
+        changed = False
+        for profile_name, profile_data in profiles.items():
+            if not isinstance(profile_data, dict):
+                continue
+            active = str(profile_data.get("active_preset", "")).strip()
+            if active and active in presets:
+                continue
+            preferred = next(
+                (
+                    pid
+                    for pid, pdata in presets.items()
+                    if isinstance(pdata, dict) and str(pdata.get("profile", "")).strip() == str(profile_name)
+                ),
+                fallback_preset,
+            )
+            profile_data["active_preset"] = preferred
+            changed = True
+        if changed:
+            data["profiles"] = profiles
+            _save_presets(root, data)
+    return data
 
 
 def _save_presets(root: Path, data: dict[str, Any]) -> None:
@@ -321,6 +388,76 @@ def _latest_manifest(default_dir: Path) -> Path | None:
     return files[0] if files else None
 
 
+def _transcript_path_for_vod(root: Path, vod_path: Path) -> Path:
+    return (root / "output" / "transcripts" / f"{vod_path.stem}.json").resolve()
+
+
+def _read_manifest_safe(path: Path) -> dict[str, Any] | None:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _manifest_has_valid_subtitles(root: Path, data: dict[str, Any]) -> bool:
+    clips = data.get("clips", [])
+    if not isinstance(clips, list) or not clips:
+        return False
+    for clip in clips:
+        if not isinstance(clip, dict):
+            return False
+        sub = str(clip.get("subtitle_path", "")).strip()
+        if not sub:
+            return False
+        sub_path = Path(sub)
+        if not sub_path.is_absolute():
+            sub_path = (root / sub_path).resolve()
+        if not sub_path.exists():
+            return False
+    return True
+
+
+def _find_reusable_quality_manifest(root: Path, vod_path: Path, preset_id: str, use_transcript_for_selection: bool) -> Path | None:
+    manifest_dir = root / "output" / "manifests"
+    if not manifest_dir.exists():
+        return None
+    files = sorted(manifest_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    target_vod = str(vod_path.resolve())
+    for mf in files:
+        data = _read_manifest_safe(mf)
+        if not data:
+            continue
+        meta = data.get("meta", {}) if isinstance(data.get("meta", {}), dict) else {}
+        if not bool(meta.get("generated_with_subtitles", False)):
+            continue
+        if str(meta.get("preset_id", "")).strip() != preset_id.strip():
+            continue
+        if bool(meta.get("use_transcript_for_selection", False)) != bool(use_transcript_for_selection):
+            continue
+        meta_vod = str(meta.get("source_vod_path", "")).strip()
+        if meta_vod:
+            try:
+                if str(Path(meta_vod).resolve()) != target_vod:
+                    continue
+            except Exception:
+                continue
+        else:
+            source_vods = data.get("source_vods", [])
+            if not isinstance(source_vods, list) or not source_vods:
+                continue
+            try:
+                if str(Path(str(source_vods[0])).resolve()) != target_vod:
+                    continue
+            except Exception:
+                continue
+        if not _manifest_has_valid_subtitles(root, data):
+            continue
+        return mf
+    return None
+
+
 def _ask_user_inputs(
     default_manifest: Path | None,
     presets_data: dict[str, Any],
@@ -338,6 +475,18 @@ def _ask_user_inputs(
 
         profiles = presets_data.get("profiles", {})
         presets = presets_data.get("presets", {})
+        pm_ui = _safe_call(resolve, "GetProjectManager")
+        project_ui = _safe_call(pm_ui, "GetCurrentProject") if pm_ui else None
+        media_pool_ui = _safe_call(project_ui, "GetMediaPool") if project_ui else None
+        subtitle_template_options = [SUBTITLE_TEMPLATE_AUTO_LABEL]
+        if media_pool_ui is not None:
+            subtitle_template_options.extend(_list_subtitle_template_candidates(media_pool_ui))
+        subtitle_template_options = list(dict.fromkeys([x for x in subtitle_template_options if str(x).strip()]))
+        preset_ids = list(presets.keys())
+        default_profile = "valo" if "valo" in profiles else (next(iter(profiles.keys()), "valo"))
+        profile_info = profiles.get(default_profile, {}) if isinstance(profiles, dict) else {}
+        active_from_profile = str(profile_info.get("active_preset", "")).strip() if isinstance(profile_info, dict) else ""
+        default_preset_id = active_from_profile if active_from_profile in presets else (preset_ids[0] if preset_ids else "")
         keys = ("zoom_x", "zoom_y", "pan", "tilt", "crop_top", "crop_bottom", "crop_left", "crop_right")
 
         colors = {
@@ -356,10 +505,12 @@ def _ask_user_inputs(
             "output_dir": str(output_dir),
             "vod_dir": str((_repo_root() / "input").resolve()),
             "render_preset": preset_name,
-            "profile": "valo",
-            "preset_id": "VALO_FIXED_SPLIT_LEFTCAM_V1",
+            "profile": default_profile,
+            "preset_id": default_preset_id,
             "query": "",
             "render_master": False,
+            "subtitle_template_name": SUBTITLE_TEMPLATE_AUTO_LABEL,
+            "subtitle_offset_ms": "-500",
         }
 
         root = tk.Tk()
@@ -439,13 +590,13 @@ def _ask_user_inputs(
         tk.Entry(form, textvariable=render_var, width=40, bd=2, relief="sunken").grid(row=2, column=1, padx=8, pady=6, sticky="w")
 
         make_label("Batch Profile", 3, 0)
-        profile_var = tk.StringVar(value="valo")
+        profile_var = tk.StringVar(value=state["profile"])
         profile_menu = tk.OptionMenu(form, profile_var, *["valo", "jeu", "react"])
         profile_menu.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"]) 
         profile_menu.grid(row=3, column=1, padx=8, pady=6, sticky="w")
 
         make_label("Preset ID", 4, 0)
-        preset_var = tk.StringVar(value="VALO_FIXED_SPLIT_LEFTCAM_V1")
+        preset_var = tk.StringVar(value=state["preset_id"])
         preset_menu = tk.OptionMenu(form, preset_var, *list(presets.keys()))
         preset_menu.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"]) 
         preset_menu.grid(row=4, column=1, padx=8, pady=6, sticky="w")
@@ -467,6 +618,9 @@ def _ask_user_inputs(
         tk.Entry(form, textvariable=query_var, width=80, bd=2, relief="sunken").grid(row=5, column=1, padx=8, pady=6, sticky="we")
 
         transcript_select_var = tk.BooleanVar(value=False)
+        preview_safe_quality_var = tk.BooleanVar(value=True)
+        subtitle_template_var = tk.StringVar(value=state["subtitle_template_name"])
+        subtitle_offset_ms_var = tk.StringVar(value=state["subtitle_offset_ms"])
 
         def open_keywords_editor() -> None:
             try:
@@ -576,6 +730,24 @@ def _ask_user_inputs(
             activebackground=colors["panel_alt"],
         ).pack(side="left", padx=(0, 8))
         ui_button(transcript_opts, "See key words", open_keywords_editor, primary=False).pack(side="left")
+        tk.Checkbutton(
+            transcript_opts,
+            text="Preview Safe Mode (Quality)",
+            variable=preview_safe_quality_var,
+            bg=colors["panel_alt"],
+            fg=colors["ink"],
+            activebackground=colors["panel_alt"],
+            selectcolor=colors["sun_soft"],
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0))
+
+        make_label("Subtitle Template", 7, 0)
+        subtitle_template_menu = tk.OptionMenu(form, subtitle_template_var, *subtitle_template_options)
+        subtitle_template_menu.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"])
+        subtitle_template_menu.grid(row=7, column=1, padx=8, pady=6, sticky="w")
+
+        make_label("Subtitle Offset (ms)", 8, 0)
+        tk.Entry(form, textvariable=subtitle_offset_ms_var, width=12, bd=2, relief="sunken").grid(row=8, column=1, padx=8, pady=6, sticky="w")
 
         master_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
@@ -1160,12 +1332,16 @@ def _ask_user_inputs(
                 "vod_dir": vod_dir_var.get().strip(),
                 "render_preset": render_var.get().strip() or "H264_Shorts_1080x1920_60fps",
                 "profile": profile_var.get().strip() or "valo",
-                "preset_id": preset_var.get().strip() or "VALO_FIXED_SPLIT_LEFTCAM_V1",
+                "preset_id": preset_var.get().strip() or state["preset_id"],
                 "query": query_var.get().strip(),
                 "use_transcript_for_selection": bool(transcript_select_var.get()),
                 "render_master": bool(master_var.get()),
                 "strict_manifest": False,
                 "require_subtitles": False,
+                "preview_safe_quality": bool(preview_safe_quality_var.get()),
+                "generate_optimized_media_quality": True,
+                "subtitle_template_name": subtitle_template_var.get().strip() or SUBTITLE_TEMPLATE_AUTO_LABEL,
+                "subtitle_offset_ms": subtitle_offset_ms_var.get().strip() or "-500",
             }
 
         def run_now(strict_manifest: bool = False, require_subtitles: bool = False) -> None:
@@ -1192,6 +1368,8 @@ def _ask_user_inputs(
                 if require_subtitles
                 else "Generating batch..."
             )
+            progress_stage = tk.StringVar(value="Batch")
+            progress_pct = tk.StringVar(value="0%")
             tk.Label(
                 progress_top,
                 textvariable=progress_text,
@@ -1204,7 +1382,37 @@ def _ask_user_inputs(
                 pady=12,
             ).pack(fill="both", expand=True)
 
+            tk.Label(
+                progress_top,
+                textvariable=progress_stage,
+                bg=colors["panel_alt"],
+                fg=colors["ink"],
+                font=("Segoe UI", 9, "bold"),
+                pady=2,
+            ).pack()
+            tk.Label(
+                progress_top,
+                textvariable=progress_pct,
+                bg=colors["panel_alt"],
+                fg=colors["ink"],
+                font=("Segoe UI", 9),
+                pady=0,
+            ).pack()
+            progress_bar = tk.Canvas(progress_top, width=360, height=16, bg=colors["panel_alt"], highlightthickness=0, bd=0)
+            progress_bar.pack(pady=(4, 10))
+            progress_bar.create_rectangle(2, 2, 358, 14, fill=colors["sun_soft"], outline=colors["ink"], width=1)
+            progress_fill = progress_bar.create_rectangle(3, 3, 3, 13, fill=colors["sun"], outline=colors["sun"], width=0)
+
             result_box: dict[str, Any] = {"result": None, "error": None}
+            progress_box: dict[str, Any] = {"stage": "Batch", "current": 0, "total": 1, "detail": "Initialisation"}
+
+            def _worker_progress(stage: str, current: int, total: int, detail: str = "") -> None:
+                progress_box["stage"] = stage or "Batch"
+                progress_box["current"] = max(0, int(current))
+                progress_box["total"] = max(1, int(total))
+                progress_box["detail"] = detail or ""
+
+            params["_progress_cb"] = _worker_progress
 
             def _worker_generate() -> None:
                 try:
@@ -1220,6 +1428,16 @@ def _ask_user_inputs(
                 ticks += 1
                 if require_subtitles and ticks % 100 == 0:
                     progress_text.set("Generating subtitles... still running, please wait.")
+                stage = str(progress_box.get("stage", "Batch"))
+                current = int(progress_box.get("current", 0))
+                total = max(1, int(progress_box.get("total", 1)))
+                detail = str(progress_box.get("detail", "")).strip()
+                pct = max(0, min(100, int(round((current / total) * 100))))
+                progress_stage.set(f"Etape: {stage}")
+                progress_pct.set(f"{pct}% ({current}/{total})")
+                progress_text.set(detail or ("Generation en cours..." if not require_subtitles else "Generation + sous-titres en cours..."))
+                x2 = 3 + int((355 * pct) / 100)
+                progress_bar.coords(progress_fill, 3, 3, max(3, x2), 13)
                 try:
                     progress_top.update_idletasks()
                     progress_top.update()
@@ -1324,31 +1542,28 @@ def _ask_user_inputs(
                         result_box["result"] = {"ok": False, "message": "No subtitle content found for selected clip range."}
                         return
 
-                    active_batch_id = str(session_ref.get("batch_id") or "").strip()
-                    if active_batch_id:
-                        _ensure_batch_folder(media_pool, active_batch_id)
-                    else:
-                        _ensure_shorteditor_subfolder(media_pool, "Manual")
-
-                    imported_item, import_status = _ensure_media_item_with_status(media_pool, out_srt)
-                    if imported_item is None:
+                    try:
+                        offset_ms_value = int(float(str(subtitle_offset_ms_var.get()).strip() or "-500"))
+                    except Exception:
+                        offset_ms_value = -500
+                    ok_import, import_msg = _import_subtitles_to_timeline(
+                        project=ctx["project"],
+                        media_pool=media_pool,
+                        timeline=timeline,
+                        subtitle_path=out_srt,
+                        template_name=str(subtitle_template_var.get().strip() or SUBTITLE_TEMPLATE_AUTO_LABEL),
+                        offset_ms=offset_ms_value,
+                    )
+                    if not ok_import:
                         result_box["result"] = {
-                            "ok": True,
-                            "message": f"SRT ready for selected clip (disk only): {out_srt.name}",
-                            "warnings": [f"Could not import subtitle in Media Pool: {out_srt}"],
-                        }
-                        return
-
-                    target_folder = active_batch_id if active_batch_id else "Manual"
-                    if import_status == "already_exists":
-                        result_box["result"] = {
-                            "ok": True,
-                            "message": f"SRT already exists in Media Pool (not re-imported to {target_folder}): {out_srt.name}",
+                            "ok": False,
+                            "message": "Strict mode: standalone Text+ subtitle apply failed.",
+                            "warnings": [f"SRT generated on disk: {out_srt}", f"Import error: {import_msg}"],
                         }
                         return
                     result_box["result"] = {
                         "ok": True,
-                        "message": f"SRT ready and imported to Media Pool/{target_folder}: {out_srt.name}",
+                        "message": f"Subtitle applied on timeline (strict): {out_srt.name}",
                     }
                 except Exception as exc:
                     result_box["error"] = exc
@@ -1416,10 +1631,84 @@ def _safe_int_from_project_setting(project: Any, key: str, fallback: int) -> int
 
 
 def _fps_from_project(project: Any) -> int:
-    fps = _safe_int_from_project_setting(project, "timelineFrameRate", 60)
+    fps = _safe_int_from_project_setting(project, "timelineFrameRate", DEFAULT_FPS)
     if fps <= 0:
-        return 60
+        return DEFAULT_FPS
     return fps
+
+
+def _parse_fps_text(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "/" in text:
+        parts = text.split("/", 1)
+        try:
+            num = float(parts[0])
+            den = float(parts[1])
+            if den > 0:
+                out = num / den
+                return out if out > 0 else None
+        except Exception:
+            return None
+    try:
+        out = float(text)
+        return out if out > 0 else None
+    except Exception:
+        return None
+
+
+def _probe_video_fps(source_path: Path) -> float | None:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=r_frame_rate,avg_frame_rate",
+        "-of",
+        "json",
+        str(source_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout or "{}")
+        streams = data.get("streams", [])
+        if not streams:
+            return None
+        s0 = streams[0] if isinstance(streams[0], dict) else {}
+        fps = _parse_fps_text(s0.get("avg_frame_rate"))
+        if fps is None:
+            fps = _parse_fps_text(s0.get("r_frame_rate"))
+        if fps is None:
+            return None
+        if fps > 120:
+            return None
+        return fps
+    except Exception:
+        return None
+
+
+def _source_fps_for_media_item(media_item: Any, source_path: Path, fallback_fps: int) -> float:
+    props = _safe_call(media_item, "GetClipProperty", default={}) or {}
+    for key in ("FPS", "Frame Rate", "Video Frame Rate"):
+        fps_prop = _parse_fps_text(props.get(key))
+        if fps_prop is not None and fps_prop <= 120:
+            return fps_prop
+    probed = _probe_video_fps(source_path)
+    if probed is not None:
+        return probed
+    if fallback_fps <= 0:
+        return float(DEFAULT_FPS)
+    return float(fallback_fps)
 
 
 @dataclass
@@ -1564,6 +1853,8 @@ def _generate_manifest_for_vod(
     vod_path: Path,
     generate_subtitles: bool = True,
     use_transcript_for_selection: bool = False,
+    progress_cb: Any | None = None,
+    preset_id: str = "",
 ) -> Path:
     # Resolve scripts run from external script folders; ensure project root is importable.
     root_str = str(root)
@@ -1574,18 +1865,28 @@ def _generate_manifest_for_vod(
         build_chapter_candidates_with_skips,
         compute_quota,
         discover_fallback_candidates,
+        trim_dead_air_on_boundaries,
         tag_overflow,
     )
     from short_editor.ingest import probe_vod
+    from short_editor.models import ClipCandidate
     from short_editor.subtitles import generate_srt_for_clip
     from short_editor.transcription import ensure_transcript
 
     cfg = _load_pipeline_config(root)
     manifest = probe_vod(vod_path)
+    if callable(progress_cb):
+        progress_cb("Batch+Subtitles", 5, 100, "Analyse du VOD")
+    transcript_path_cached = _transcript_path_for_vod(root, vod_path)
+    transcript_exists = transcript_path_cached.exists()
+
     if use_transcript_for_selection:
         try:
-            ensure_transcript(vod_path, cfg, root / "output" / "transcripts")
-            _log(f"transcript_selection_enabled vod={vod_path}")
+            if transcript_exists:
+                _log(f"transcript_selection_cache_hit vod={vod_path} transcript={transcript_path_cached}")
+            else:
+                ensure_transcript(vod_path, cfg, root / "output" / "transcripts")
+                _log(f"transcript_selection_enabled vod={vod_path}")
         except Exception as exc:
             _log(f"transcript_selection_failed vod={vod_path} err={exc}")
 
@@ -1601,6 +1902,8 @@ def _generate_manifest_for_vod(
         fallback = [c.to_dict() for c in discover_fallback_candidates(manifest, cfg, root / "work")]
         needed = max(0, target_quota - len(selected))
         selected.extend(_select_non_overlapping_fallback(selected, fallback, needed))
+    if callable(progress_cb):
+        progress_cb("Batch+Subtitles", 20, 100, "Selection des clips terminee")
 
     batch_id = f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     clip_objs = []
@@ -1609,6 +1912,31 @@ def _generate_manifest_for_vod(
         c["overflow"] = i >= max_quota
         c["subtitle_path"] = ""
         clip_objs.append(c)
+
+    trim_candidates: list[ClipCandidate] = []
+    for c in clip_objs:
+        trim_candidates.append(
+            ClipCandidate(
+                clip_id=str(c.get("clip_id", "")),
+                display_name=str(c.get("display_name", "")),
+                source_path=str(c.get("source_path", manifest.source_path)),
+                start_seconds=float(c.get("start_seconds", 0.0)),
+                end_seconds=float(c.get("end_seconds", 0.0)),
+                mandatory=bool(c.get("mandatory", False)),
+                seed_type=str(c.get("seed_type", "unknown")),
+                score=float(c.get("score", 0.0)),
+                reason=str(c.get("reason", "")),
+                overflow=bool(c.get("overflow", False)),
+                subtitle_path=str(c.get("subtitle_path", "")),
+            )
+        )
+    trim_warnings = trim_dead_air_on_boundaries(manifest, trim_candidates, cfg, root / "work")
+    for i, tc in enumerate(trim_candidates):
+        clip_objs[i]["start_seconds"] = tc.start_seconds
+        clip_objs[i]["end_seconds"] = tc.end_seconds
+        clip_objs[i]["reason"] = tc.reason
+    manifest_warnings.extend(trim_warnings)
+
     _assign_simple_display_names_dict(clip_objs)
     _assign_timeline_names_dict(clip_objs, batch_id)
 
@@ -1620,14 +1948,19 @@ def _generate_manifest_for_vod(
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 with redirect_stderr(io.StringIO()):
-                    transcript_path = ensure_transcript(vod_path, cfg, root / "output" / "transcripts")
+                    if transcript_exists and transcript_path_cached.exists():
+                        transcript_path = transcript_path_cached
+                        _log(f"subtitle_transcript_cache_hit vod={vod_path} transcript={transcript_path}")
+                    else:
+                        transcript_path = ensure_transcript(vod_path, cfg, root / "output" / "transcripts")
                     _log(f"transcript_ok vod={vod_path} transcript={transcript_path}")
                     subtitle_dir = root / "output" / "subtitles" / batch_id
                     subtitle_dir.mkdir(parents=True, exist_ok=True)
                     subtitles_generated_local = 0
                     srt_name_usage: dict[str, int] = {}
                     subtitle_index_rows: list[dict[str, str]] = []
-                    for c in clip_objs:
+                    total_clips = max(1, len(clip_objs))
+                    for idx_clip, c in enumerate(clip_objs, start=1):
                         base_label = str(c.get("display_name") or c.get("clip_id") or "clip").strip()
                         base_name = _safe_name_token(base_label, limit=120)
                         if not base_name:
@@ -1655,6 +1988,9 @@ def _generate_manifest_for_vod(
                                     "srt_path": resolved_srt,
                                 }
                             )
+                        if callable(progress_cb):
+                            pct = 20 + int(round((idx_clip / total_clips) * 70))
+                            progress_cb("Batch+Subtitles", min(90, pct), 100, f"Generation sous-titres {idx_clip}/{total_clips}")
                     index_path = subtitle_dir / "index.csv"
                     with index_path.open("w", encoding="utf-8", newline="") as f_idx:
                         writer = csv.DictWriter(f_idx, fieldnames=["clip_id", "display_name", "srt_file", "srt_path"])
@@ -1691,6 +2027,14 @@ def _generate_manifest_for_vod(
         "source_vods": [str(vod_path)],
         "clips": clip_objs,
         "pipeline_version": cfg.get("pipeline_version", "0.1.0"),
+        "meta": {
+            "source_vod_path": str(vod_path.resolve()),
+            "preset_id": preset_id,
+            "generated_with_subtitles": bool(captions_enabled),
+            "use_transcript_for_selection": bool(use_transcript_for_selection),
+            "transcript_path": str(transcript_path_cached),
+            "transcript_exists_pre_generation": bool(transcript_exists),
+        },
         "warnings": manifest_warnings,
         "quota_summary": [
             {
@@ -1710,6 +2054,8 @@ def _generate_manifest_for_vod(
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
         f.write("\n")
+    if callable(progress_cb):
+        progress_cb("Batch+Subtitles", 100, 100, "Manifest ecrit")
     _log(f"Auto manifest generated: {out_path}")
     return out_path
 
@@ -1746,26 +2092,65 @@ def _load_transcript_entries(root: Path, source_path: str) -> list[dict[str, Any
 def _filter_plans_by_transcript_query(root: Path, plans: list[ClipPlan], query: str, max_seconds: int) -> list[ClipPlan]:
     if not query.strip():
         return plans
-    filtered: list[ClipPlan] = []
     q = query.strip().lower()
+    min_score = 0.25
+    min_distance_seconds = 12.0
+    overlap_threshold = 0.8
+    lead_in_seconds = 5.0
+
+    plans_by_source: dict[str, list[ClipPlan]] = {}
     for plan in plans:
-        entries = _load_transcript_entries(root, plan.source_path)
+        plans_by_source.setdefault(plan.source_path, []).append(plan)
+
+    filtered: list[ClipPlan] = []
+    for source_path, source_plans in plans_by_source.items():
+        entries = _load_transcript_entries(root, source_path)
         if not entries:
             continue
-        best = 0.0
-        best_start = None
+
+        candidate_windows: list[tuple[float, float, float]] = []
         for e in entries:
             text = str(e.get("text", ""))
             score = _semantic_match_score(q, text)
             if q in text.lower():
                 score = max(score, 0.9)
-            if score > best:
-                best = score
-                best_start = float(e.get("start", 0.0))
-        if best >= 0.25 and best_start is not None:
-            plan.start_seconds = max(0.0, best_start - 5.0)
-            plan.end_seconds = plan.start_seconds + float(max_seconds)
+            if score < min_score:
+                continue
+            raw_start = float(e.get("start", 0.0))
+            start = max(0.0, raw_start - lead_in_seconds)
+            end = start + float(max_seconds)
+            candidate_windows.append((score, start, end))
+
+        if not candidate_windows:
+            continue
+
+        candidate_windows.sort(key=lambda x: x[0], reverse=True)
+
+        deduped_windows: list[tuple[float, float, float]] = []
+        for score, start, end in candidate_windows:
+            too_close = False
+            for _, kept_start, kept_end in deduped_windows:
+                if abs(start - kept_start) < min_distance_seconds:
+                    too_close = True
+                    break
+                overlap = _overlap_ratio_from_ranges(start, end, kept_start, kept_end)
+                if overlap > overlap_threshold:
+                    too_close = True
+                    break
+            if not too_close:
+                deduped_windows.append((score, start, end))
+
+        if not deduped_windows:
+            continue
+
+        used = min(len(source_plans), len(deduped_windows))
+        for idx in range(used):
+            plan = source_plans[idx]
+            _, start, end = deduped_windows[idx]
+            plan.start_seconds = start
+            plan.end_seconds = end
             filtered.append(plan)
+
     return filtered
 
 
@@ -1808,6 +2193,34 @@ def _walk_folder_clips(folder: Any) -> list[Any]:
         pass
     for sub in _safe_call(folder, "GetSubFolderList", default=[]) or []:
         out.extend(_walk_folder_clips(sub))
+    return out
+
+
+def _list_subtitle_template_candidates(media_pool: Any) -> list[str]:
+    root = _safe_call(media_pool, "GetRootFolder")
+    if root is None:
+        return []
+    names: set[str] = set()
+    for clip in _walk_folder_clips(root):
+        name = str(_safe_call(clip, "GetName", default="") or "").strip()
+        if not name:
+            continue
+        props = _safe_call(clip, "GetClipProperty", default={}) or {}
+        ctype = str(props.get("Type") or props.get("Clip Type") or "").strip().lower()
+        lowered = name.lower()
+        if (
+            "text+" in lowered
+            or "caption" in lowered
+            or "subtitle" in lowered
+            or "fusion title" in ctype
+            or "generator" in ctype
+            or "title" in ctype
+        ):
+            names.add(name)
+    out = sorted(names)
+    for forced in (STANDALONE_CAPTION_TEMPLATE_NAME, STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME):
+        if forced not in out:
+            out.insert(0, forced)
     return out
 
 
@@ -1888,9 +2301,71 @@ def _apply_item_transform(item: Any, props: dict[str, float]) -> None:
         _safe_call(item, "SetProperty", rk, float(v))
 
 
+def _force_item_normal_speed(item: Any) -> None:
+    # Defensive normalization against API/build differences that can retain retime state.
+    for key, value in (
+        ("Speed", 100.0),
+        ("Clip Speed", 100.0),
+        ("RetimeProcess", 0),
+        ("Retime Process", 0),
+    ):
+        _safe_call(item, "SetProperty", key, value)
+    _safe_call(item, "SetClipProperty", "Speed", "100")
+    _safe_call(item, "SetClipProperty", "Clip Speed", "100")
+
+
 def _get_timeline_items_on_track(timeline: Any, track_index: int) -> list[Any]:
     out = _safe_call(timeline, "GetItemListInTrack", "video", track_index, default=[])
     return out or []
+
+
+def _get_track_item_count(timeline: Any, track_type: str) -> int:
+    count = _safe_call(timeline, "GetTrackCount", track_type, default=0)
+    try:
+        count_i = int(count)
+    except Exception:
+        count_i = 0
+    total = 0
+    for idx in range(1, count_i + 1):
+        items = _safe_call(timeline, "GetItemListInTrack", track_type, idx, default=[])
+        total += len(items or [])
+    return total
+
+
+def _read_speed_props(item: Any) -> str:
+    vals: list[str] = []
+    for key in ("Speed", "Clip Speed", "Retime Process", "RetimeProcess"):
+        v = _safe_call(item, "GetProperty", key, default=None)
+        if v is None:
+            props = _safe_call(item, "GetProperty", default={}) or {}
+            v = props.get(key)
+        if v is not None:
+            vals.append(f"{key}={v}")
+    return ";".join(vals) if vals else "no_speed_props"
+
+
+def _log_timeline_diagnostics(timeline: Any, plan: ClipPlan, expected_duration_s: float, mode: str) -> None:
+    tname = str(_safe_call(timeline, "GetName", default="timeline"))
+    video_count = _get_track_item_count(timeline, "video")
+    audio_count = _get_track_item_count(timeline, "audio")
+    subtitle_count = _get_track_item_count(timeline, "subtitle")
+    first_item = None
+    items_t1 = _get_timeline_items_on_track(timeline, 1)
+    if items_t1:
+        first_item = items_t1[0]
+    if first_item is None:
+        _log(
+            f"timeline_diag name={tname} clip={plan.clip_id} mode={mode} expected_dur={expected_duration_s:.3f} "
+            f"video_items={video_count} audio_items={audio_count} subtitle_items={subtitle_count} first_item=missing"
+        )
+        return
+    s = _safe_call(first_item, "GetStart", default=None)
+    e = _safe_call(first_item, "GetEnd", default=None)
+    speed_bits = _read_speed_props(first_item)
+    _log(
+        f"timeline_diag name={tname} clip={plan.clip_id} mode={mode} expected_dur={expected_duration_s:.3f} "
+        f"item_start={s} item_end={e} video_items={video_count} audio_items={audio_count} subtitle_items={subtitle_count} {speed_bits}"
+    )
 
 
 def _get_item_at_current_frame(timeline: Any, track_index: int) -> Any | None:
@@ -2049,7 +2524,7 @@ def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, 
     if not timeline:
         return False, "No active timeline", {}
 
-    fps = _fps_from_project(project)
+    project_fps = _fps_from_project(project)
     media_pool = _safe_call(project, "GetMediaPool")
 
     def _source_path_from_media_item(media_item: Any) -> str:
@@ -2130,8 +2605,8 @@ def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, 
             src_in = 0
             src_out = max(1, tl_end - tl_start)
 
-    clip_start = max(0.0, float(src_in) / max(1, fps))
-    clip_end = max(clip_start + 0.1, float(src_out) / max(1, fps))
+    clip_start = max(0.0, float(src_in) / max(1, project_fps))
+    clip_end = max(clip_start + 0.1, float(src_out) / max(1, project_fps))
     return True, "ok", {
         "project": project,
         "timeline": timeline,
@@ -2145,6 +2620,7 @@ def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, 
 
 
 def _create_timeline_for_clip_with_preset(
+    project: Any,
     media_pool: Any,
     name: str,
     media_item: Any,
@@ -2155,6 +2631,7 @@ def _create_timeline_for_clip_with_preset(
     timeline = _safe_call(media_pool, "CreateEmptyTimeline", name)
     if not timeline:
         return None
+    _force_timeline_fps_60(project, timeline)
 
     mode = str(preset.get("mode", "single"))
     if mode == "fixed_split":
@@ -2166,8 +2643,10 @@ def _create_timeline_for_clip_with_preset(
         items_t1 = _get_timeline_items_on_track(timeline, 1)
         items_t2 = _get_timeline_items_on_track(timeline, 2)
         if items_t1:
+            _force_item_normal_speed(items_t1[0])
             _apply_item_transform(items_t1[0], dict(preset.get("camera", {})))
         if items_t2:
+            _force_item_normal_speed(items_t2[0])
             _apply_item_transform(items_t2[0], dict(preset.get("gameplay", {})))
         return timeline
 
@@ -2176,6 +2655,7 @@ def _create_timeline_for_clip_with_preset(
         return None
     items_t1 = _get_timeline_items_on_track(timeline, 1)
     if items_t1:
+        _force_item_normal_speed(items_t1[0])
         _apply_item_transform(items_t1[0], dict(preset.get("single", {})))
     return timeline
 
@@ -2268,10 +2748,58 @@ def _ensure_vertical_project_settings(project: Any) -> None:
     _safe_call(project, "SetSetting", "timelineResolutionHeight", "1920")
     _safe_call(project, "SetSetting", "timelineFrameRate", "60")
     _safe_call(project, "SetSetting", "timelinePlaybackFrameRate", "60")
+    # Extra compatibility keys/values for builds that ignore one spelling.
+    for key in ("timelineFrameRate", "timelinePlaybackFrameRate", "playbackFrameRate"):
+        for value in ("60", "60.0", "60.000"):
+            _safe_call(project, "SetSetting", key, value)
     _safe_call(project, "SetSetting", "timelineOutputResolutionWidth", "1080")
     _safe_call(project, "SetSetting", "timelineOutputResolutionHeight", "1920")
     # Prefer crop behavior when source is 16:9.
     _safe_call(project, "SetSetting", "inputScalingPreset", "Scale full frame with crop")
+
+
+def _ensure_playback_fps_60(project: Any) -> bool:
+    """Best-effort normalization to avoid 60->24 preview slowdown."""
+    for key in ("timelinePlaybackFrameRate", "playbackFrameRate"):
+        for value in ("60", "60.0", "60.000"):
+            _safe_call(project, "SetSetting", key, value)
+    timeline_fps = _safe_int_from_project_setting(project, "timelineFrameRate", DEFAULT_FPS)
+    playback_fps = _safe_int_from_project_setting(project, "timelinePlaybackFrameRate", DEFAULT_FPS)
+    _log(f"playback_fps_verify timeline={timeline_fps} playback={playback_fps}")
+    return timeline_fps == 60 and playback_fps == 60
+
+
+def _force_timeline_fps_60(project: Any, timeline: Any) -> None:
+    _safe_call(project, "SetCurrentTimeline", timeline)
+    for key in ("timelineFrameRate", "timelinePlaybackFrameRate", "playbackFrameRate"):
+        for value in ("60", "60.0", "60.000"):
+            _safe_call(timeline, "SetSetting", key, value)
+    t_tl = _safe_call(timeline, "GetSetting", "timelineFrameRate", default=None)
+    t_pb = _safe_call(timeline, "GetSetting", "timelinePlaybackFrameRate", default=None)
+    _log(f"timeline_fps_verify name={_safe_call(timeline, 'GetName', default='timeline')} timeline={t_tl} playback={t_pb}")
+
+
+def _apply_preview_safe_playback(project: Any) -> list[str]:
+    warnings_out: list[str] = []
+    attempts = [
+        ("renderCacheMode", "user"),
+        ("renderCacheMode", "User"),
+        ("proxyMediaMode", "half"),
+        ("proxyMediaMode", "Half"),
+        ("timelineProxyResolution", "half"),
+        ("timelineProxyResolution", "Half"),
+    ]
+    applied = 0
+    for key, value in attempts:
+        out = _safe_call(project, "SetSetting", key, value, default=False)
+        if out:
+            applied += 1
+            _log(f"preview_safe_setting_applied {key}={value}")
+    if applied == 0:
+        warnings_out.append("Preview Safe Mode: Resolve API n'a pas expose les settings cache/proxy sur cette build.")
+    else:
+        _log(f"preview_safe_settings_applied_count={applied}")
+    return warnings_out
 
 
 def _queue_render_job(project: Any, timeline: Any, output_dir: Path, preset_name: str) -> bool:
@@ -2302,6 +2830,111 @@ def _queue_render_job(project: Any, timeline: Any, output_dir: Path, preset_name
     return bool(job_id)
 
 
+def _collect_unique_media_items_from_timelines(timelines: list[Any]) -> list[Any]:
+    seen: set[str] = set()
+    out: list[Any] = []
+    for tl in timelines:
+        track_count = _safe_call(tl, "GetTrackCount", "video", default=0)
+        try:
+            track_count_i = int(track_count)
+        except Exception:
+            track_count_i = 0
+        for track_idx in range(1, max(1, track_count_i) + 1):
+            items = _safe_call(tl, "GetItemListInTrack", "video", track_idx, default=[]) or []
+            for it in items:
+                media_item = _safe_call(it, "GetMediaPoolItem")
+                if media_item is None:
+                    continue
+                uid = str(id(media_item))
+                if uid in seen:
+                    continue
+                seen.add(uid)
+                out.append(media_item)
+    return out
+
+
+def _generate_optimized_media_for_batch(
+    root: Path,
+    project: Any,
+    media_pool: Any,
+    batch_id: str,
+    timelines: list[Any],
+    progress_cb: Any | None = None,
+) -> tuple[list[str], Path]:
+    warnings: list[str] = []
+    out_dir = root / "output" / "resolve_optimized" / batch_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = out_dir / "optimized_index.csv"
+
+    # Try setting a dedicated optimized media location for this quality run.
+    configured_path = False
+    for key in ("optimizedMediaPath", "OptimizedMediaPath"):
+        if _safe_call(project, "SetSetting", key, str(out_dir), default=False):
+            configured_path = True
+            _log(f"optimized_media_path_set key={key} path={out_dir}")
+            break
+
+    media_items = _collect_unique_media_items_from_timelines(timelines)
+    total = len(media_items)
+    if total == 0:
+        with report_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["batch_id", "timeline", "clip_name", "source_path", "status", "notes"])
+        warnings.append("Optimized media skipped: no media items found in current batch timelines.")
+        return warnings, report_path
+
+    rows: list[list[str]] = []
+    success_count = 0
+
+    def _try_generate(item: Any) -> bool:
+        variants = [
+            (media_pool, "GenerateOptimizedMedia", [item]),
+            (media_pool, "GenerateOptimizedMedia", item),
+            (project, "GenerateOptimizedMedia", [item]),
+            (project, "GenerateOptimizedMedia", item),
+        ]
+        for obj, method, payload in variants:
+            out = _safe_call(obj, method, payload, default=None)
+            if bool(out):
+                return True
+        return False
+
+    for idx, item in enumerate(media_items, start=1):
+        if callable(progress_cb):
+            progress_cb("Optimized Media", idx - 1, max(1, total), f"Optimizing media {idx}/{total}")
+
+        clip_name = str(_safe_call(item, "GetName", default="clip"))
+        props = _safe_call(item, "GetClipProperty", default={}) or {}
+        source_path = str(props.get("File Path") or "")
+        ok = _try_generate(item)
+        status = "requested" if ok else "failed"
+        if ok:
+            success_count += 1
+        rows.append([
+            batch_id,
+            "",
+            clip_name,
+            source_path,
+            status,
+            "optimized path configured" if configured_path else "resolve managed cache path",
+        ])
+
+    with report_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["batch_id", "timeline", "clip_name", "source_path", "status", "notes"])
+        writer.writerows(rows)
+
+    if callable(progress_cb):
+        progress_cb("Optimized Media", total, max(1, total), f"Optimized media requested {success_count}/{total}")
+
+    if not configured_path:
+        warnings.append("Optimized media generated via Resolve cache path (API could not set dedicated optimized media folder).")
+    if success_count < total:
+        warnings.append(f"Optimized media requested for {success_count}/{total} item(s).")
+    _log(f"optimized_media_summary batch={batch_id} requested={success_count}/{total} report={report_path}")
+    return warnings, report_path
+
+
 def _find_timeline_by_name(project: Any, timeline_name: str) -> Any | None:
     count = _safe_call(project, "GetTimelineCount", default=0) or 0
     try:
@@ -2328,7 +2961,14 @@ def _delete_timeline_if_exists(project: Any, media_pool: Any, timeline_name: str
         _safe_call(project, "DeleteTimeline", tl, default=False)
 
 
-def _import_subtitles_to_timeline(project: Any, media_pool: Any, timeline: Any, subtitle_path: Path) -> tuple[bool, str]:
+def _import_subtitles_to_timeline(
+    project: Any,
+    media_pool: Any,
+    timeline: Any,
+    subtitle_path: Path,
+    template_name: str = SUBTITLE_TEMPLATE_AUTO_LABEL,
+    offset_ms: int = -500,
+) -> tuple[bool, str]:
     if not subtitle_path.exists():
         return False, f"Subtitle file missing: {subtitle_path}"
 
@@ -2355,57 +2995,184 @@ def _import_subtitles_to_timeline(project: Any, media_pool: Any, timeline: Any, 
     _safe_call(project, "SetCurrentTimeline", timeline)
     _safe_call(media_pool, "SetCurrentTimeline", timeline)
 
-    # Preferred APIs by build.
-    for api_name in ("ImportSubtitles", "ImportSubtitleFile"):
-        out = _safe_call(timeline, api_name, str(subtitle_path), default=None)
-        after_count = _count_subtitle_items()
-        if out or after_count > before_count:
-            return True, f"Subtitles imported via timeline.{api_name}"
+    def _find_template_item_by_name(root_folder: Any, wanted_name: str) -> Any | None:
+        target = wanted_name.strip().lower()
 
-    for api_name in ("ImportSubtitles", "ImportSubtitleFile"):
-        out = _safe_call(project, api_name, str(subtitle_path), default=None)
-        after_count = _count_subtitle_items()
-        if out or after_count > before_count:
-            return True, f"Subtitles imported via project.{api_name}"
+        def _walk(folder: Any) -> list[Any]:
+            out: list[Any] = []
+            out.extend(_safe_call(folder, "GetClipList", default=[]) or [])
+            for sub in _safe_call(folder, "GetSubFolderList", default=[]) or []:
+                out.extend(_walk(sub))
+            return out
 
-    # Fallback: import into media pool then append on TOP video track.
-    sub_item = _ensure_media_item(media_pool, subtitle_path)
-    if sub_item is not None:
-        # Ensure there is a dedicated top overlay track and place subtitles at recordFrame=0
-        # so SRT timecodes stay synced with the clip timeline.
-        _safe_call(timeline, "AddTrack", "video")
-        video_track_count = _safe_call(timeline, "GetTrackCount", "video", default=1)
+        for clip in _walk(root_folder):
+            name = str(_safe_call(clip, "GetName", default="") or "").strip()
+            if name.lower() == target:
+                return clip
+        return None
+
+    def _ensure_standalone_caption_template() -> tuple[Any | None, str]:
+        root_folder = _safe_call(media_pool, "GetRootFolder")
+        if root_folder is None:
+            return None, "Media Pool root folder not available"
+
+        wanted = str(template_name or "").strip()
+        is_auto = wanted == "" or wanted == SUBTITLE_TEMPLATE_AUTO_LABEL
+        existing = None
+        if not is_auto:
+            existing = _find_template_item_by_name(root_folder, wanted)
+        if existing is None:
+            existing = _find_template_item_by_name(root_folder, STANDALONE_CAPTION_TEMPLATE_NAME)
+        if existing is None:
+            existing = _find_template_item_by_name(root_folder, STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME)
+        if existing is not None:
+            _log("standalone_template_found")
+            return existing, "template_found"
+
+        drb_path = (_repo_root() / "resolve_integration" / "assets" / "shorteditor-caption-bin.drb").resolve()
+        if not drb_path.exists():
+            return None, f"Standalone caption template asset missing: {drb_path}"
+
+        imported = _safe_call(media_pool, "ImportFolderFromFile", str(drb_path), default=False)
+        if not imported:
+            return None, f"Failed to import standalone caption template folder: {drb_path.name}"
+        _log(f"standalone_template_imported_from={drb_path}")
+
+        root_folder = _safe_call(media_pool, "GetRootFolder")
+        if root_folder is None:
+            return None, "Media Pool root folder unavailable after template import"
+        loaded = None
+        if not is_auto:
+            loaded = _find_template_item_by_name(root_folder, wanted)
+        if loaded is None:
+            loaded = _find_template_item_by_name(root_folder, STANDALONE_CAPTION_TEMPLATE_NAME)
+        if loaded is None:
+            loaded = _find_template_item_by_name(root_folder, STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME)
+        if loaded is None:
+            return None, (
+                f"Template '{wanted or STANDALONE_CAPTION_TEMPLATE_NAME}'/'{STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME}' "
+                f"not found after importing {drb_path.name}"
+            )
+        return loaded, "template_imported"
+
+    def _parse_srt_segments(path: Path) -> list[dict[str, Any]]:
         try:
-            top_video_track = max(1, int(video_track_count))
+            text = path.read_text(encoding="utf-8")
         except Exception:
-            top_video_track = 1
+            return []
+        blocks = re.split(r"\r?\n\r?\n+", text.strip())
+        segs: list[dict[str, Any]] = []
+        ts_re = re.compile(
+            r"(?P<s>\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(?P<e>\d{2}:\d{2}:\d{2},\d{3})"
+        )
 
-        payload_variants: list[Any] = [
-            [sub_item],
-            sub_item,
-            [{"mediaPoolItem": sub_item}],
-            [{"mediaPoolItem": sub_item, "trackIndex": top_video_track, "recordFrame": 0}],
-            [{"mediaPoolItem": sub_item, "trackType": "video", "trackIndex": top_video_track, "recordFrame": 0}],
-            [{"mediaPoolItem": sub_item, "mediaType": 1, "trackIndex": top_video_track, "recordFrame": 0}],
-            [{"mediaPoolItem": sub_item, "startFrame": 0, "endFrame": 0, "trackIndex": top_video_track, "recordFrame": 0}],
-        ]
+        def _ts_to_sec(ts: str) -> float:
+            hh, mm, rest = ts.split(":")
+            ss, ms = rest.split(",")
+            return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(ms) / 1000.0
 
-        for idx, payload in enumerate(payload_variants, start=1):
-            out = _safe_call(media_pool, "AppendToTimeline", payload)
-            after_count = _count_subtitle_items()
-            after_video = _count_video_items()
-            _log(f"subtitle_fallback_try#{idx} out_type={type(out).__name__} top_video_track={top_video_track} after_sub={after_count} after_vid={after_video}")
-            if after_count > before_count:
-                return True, "Subtitles imported via fallback on top overlay track"
-            if after_video > before_video_count:
-                return True, "Subtitle media appended on top video track (synced at clip start)"
+        for block in blocks:
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+            if len(lines) < 2:
+                continue
+            m = ts_re.search(lines[1] if lines[0].isdigit() else lines[0])
+            if not m:
+                continue
+            text_lines = lines[2:] if lines[0].isdigit() else lines[1:]
+            caption = "\n".join(text_lines).strip()
+            if not caption:
+                continue
+            start = _ts_to_sec(m.group("s"))
+            end = _ts_to_sec(m.group("e"))
+            if end <= start:
+                continue
+            segs.append({"start": start, "end": end, "text": caption})
+        return segs
+
+    def _set_textplus_item_text(timeline_item: Any, text_value: str) -> bool:
+        comp_count = _safe_call(timeline_item, "GetFusionCompCount", default=0) or 0
+        try:
+            count_i = int(comp_count)
+        except Exception:
+            count_i = 0
+        if count_i <= 0:
+            return False
+        comp = _safe_call(timeline_item, "GetFusionCompByIndex", 1, default=None)
+        if comp is None:
+            return False
+        tools = _safe_call(comp, "GetToolList", False, "TextPlus", default=None)
+        if not isinstance(tools, dict) or not tools:
+            tools = _safe_call(comp, "GetToolList", default={}) or {}
+        for _, tool in tools.items():
+            ok = bool(_safe_call(tool, "SetInput", "StyledText", text_value, default=False))
+            ok = ok or bool(_safe_call(tool, "SetInput", "Text", text_value, default=False))
+            if ok:
+                return True
+        return False
+
+    segments = _parse_srt_segments(subtitle_path)
+    if not segments:
+        return False, "SRT has no valid subtitle segments"
+
+    template_item, template_status = _ensure_standalone_caption_template()
+    if template_item is None:
+        return False, template_status
+
+    frame_rate_raw = _safe_call(timeline, "GetSetting", "timelineFrameRate", default="60")
+    fps = _parse_fps_text(frame_rate_raw) or 60.0
+    timeline_start = _safe_call(timeline, "GetStartFrame", default=0) or 0
+    try:
+        tl_start_i = int(timeline_start)
+    except Exception:
+        tl_start_i = 0
+    track_count = _safe_call(timeline, "GetTrackCount", "video", default=1)
+    try:
+        track_idx = max(1, int(track_count) + 1)
+    except Exception:
+        track_idx = 2
+    _safe_call(timeline, "AddTrack", "video")
+
+    clip_list: list[dict[str, Any]] = []
+    time_offset = float(offset_ms) / 1000.0
+    _log(f"subtitle_textplus_offset_applied_ms={offset_ms}")
+    for seg in segments:
+        shifted_start = max(0.0, float(seg["start"]) + time_offset)
+        shifted_end = max(shifted_start + 0.05, float(seg["end"]) + time_offset)
+        seg_start = int(round(shifted_start * fps))
+        seg_end = int(round(shifted_end * fps))
+        if seg_end <= seg_start:
+            seg_end = seg_start + 1
+        clip_list.append(
+            {
+                "mediaPoolItem": template_item,
+                "startFrame": 0,
+                "endFrame": max(1, seg_end - seg_start),
+                "trackIndex": track_idx,
+                "recordFrame": tl_start_i + seg_start,
+            }
+        )
+
+    appended = _safe_call(media_pool, "AppendToTimeline", clip_list, default=None)
+    if not isinstance(appended, list) or not appended:
+        return False, "Failed to append standalone Text+ subtitle clips to timeline"
+
+    applied = 0
+    for i, it in enumerate(appended):
+        txt = str(segments[i].get("text", "")) if i < len(segments) else ""
+        if txt and _set_textplus_item_text(it, txt):
+            applied += 1
+
     after_count = _count_subtitle_items()
     after_video = _count_video_items()
-    if after_count > before_count:
-        return True, "Subtitles imported but API returned ambiguous result"
-    if after_video > before_video_count:
-        return True, "Subtitle clip appended on video track (no subtitle track API)"
-    return False, "No supported subtitle import API available"
+    _log(
+        f"subtitle_textplus_apply template={STANDALONE_CAPTION_TEMPLATE_NAME} status={template_status} "
+        f"applied={applied}/{len(segments)} subtitle_tracks_before={before_count} subtitle_tracks_after={after_count} "
+        f"video_items_before={before_video_count} video_items_after={after_video}"
+    )
+
+    if applied <= 0:
+        return False, "Text+ clips appended but text injection failed"
+    return True, f"Subtitles applied via standalone Text+ ({applied}/{len(segments)})"
 
 
 def _plan_key(plan: ClipPlan) -> str:
@@ -2435,6 +3202,9 @@ def _build_from_manifest(
     detected_vod_path: Path | None = None,
     user_vod_dir: Path | None = None,
     require_subtitles: bool = False,
+    subtitle_template_name: str = SUBTITLE_TEMPLATE_AUTO_LABEL,
+    subtitle_offset_ms: int = -500,
+    progress_cb: Any | None = None,
 ) -> tuple[str, dict[str, ClipPlan], list[Any], list[str]]:
     batch_id, plans = _parse_manifest(manifest_path)
 
@@ -2448,12 +3218,21 @@ def _build_from_manifest(
 
     _ensure_vertical_project_settings(project)
     _ensure_batch_folder(media_pool, batch_id)
-    fps = _fps_from_project(project)
+    playback_ok = _ensure_playback_fps_60(project)
+    project_fps = _fps_from_project(project)
+    playback_fps = _safe_int_from_project_setting(project, "timelinePlaybackFrameRate", DEFAULT_FPS)
+    _log(f"project_playback_diag timelineFrameRate={project_fps} timelinePlaybackFrameRate={playback_fps}")
 
     created_timelines: list[Any] = []
     warnings: list[str] = []
+    if not playback_ok or playback_fps != 60:
+        warnings.append(
+            f"Resolve playback frame rate is {playback_fps} (expected 60). Preview may appear slowed/choppy until project playback is set to 60 fps."
+        )
     plan_map: dict[str, ClipPlan] = {}
     resolved_source_by_clip: dict[str, Path] = {}
+    source_fps_by_clip: dict[str, float] = {}
+    source_fps_cache: dict[str, float] = {}
     used_timeline_names: set[str] = set()
     remap_notices: set[str] = set()
     subtitle_eligible = 0
@@ -2484,28 +3263,49 @@ def _build_from_manifest(
                 warnings.append(f"Multiple candidates for missing source '{file_name}' in VOD folder: {user_vod_dir}")
         return None
 
-    for plan in plans:
+    total_plans = max(1, len(plans))
+    if callable(progress_cb):
+        progress_cb("Batch", 0, total_plans, "Preparation timelines")
+
+    for idx_plan, plan in enumerate(plans, start=1):
         src = _resolve_existing_source(plan.source_path)
         if src is None:
             raw_src = Path(plan.source_path)
             if not raw_src.is_absolute():
                 raw_src = (root / raw_src).resolve()
             warnings.append(f"Missing source file: {raw_src}")
+            if callable(progress_cb):
+                progress_cb("Batch", idx_plan, total_plans, f"Skip source manquante {idx_plan}/{total_plans}")
             continue
         if not src.exists():
             warnings.append(f"Missing source file: {src}")
+            if callable(progress_cb):
+                progress_cb("Batch", idx_plan, total_plans, f"Skip source absente {idx_plan}/{total_plans}")
             continue
 
         item = _ensure_media_item(media_pool, src)
         if item is None:
             warnings.append(f"Could not import media: {src}")
+            if callable(progress_cb):
+                progress_cb("Batch", idx_plan, total_plans, f"Skip import media {idx_plan}/{total_plans}")
             continue
 
-        start_frame = int(round(plan.start_seconds * fps))
-        end_frame = int(round(plan.end_seconds * fps))
+        source_key = str(src.resolve()).lower()
+        source_fps = source_fps_cache.get(source_key)
+        if source_fps is None:
+            source_fps = _source_fps_for_media_item(item, src, project_fps)
+            source_fps_cache[source_key] = source_fps
+        start_frame = int(round(plan.start_seconds * source_fps))
+        end_frame = int(round(plan.end_seconds * source_fps))
         if end_frame <= start_frame:
             warnings.append(f"Invalid range for {plan.clip_id}")
+            if callable(progress_cb):
+                progress_cb("Batch", idx_plan, total_plans, f"Skip range invalide {idx_plan}/{total_plans}")
             continue
+        _log(
+            f"clip_frame_map clip={plan.clip_id} project_fps={project_fps} source_fps={source_fps:.3f} "
+            f"start_s={plan.start_seconds:.3f} end_s={plan.end_seconds:.3f} start_f={start_frame} end_f={end_frame}"
+        )
 
         timeline_name = str(plan.timeline_name or "").strip()
         if not timeline_name:
@@ -2519,10 +3319,16 @@ def _build_from_manifest(
             timeline_name = f"{base_name} ({dup_idx})"
         used_timeline_names.add(timeline_name)
         _delete_timeline_if_exists(project, media_pool, timeline_name)
-        tl = _create_timeline_for_clip_with_preset(media_pool, timeline_name, item, start_frame, end_frame, selected_preset)
+        tl = _create_timeline_for_clip_with_preset(project, media_pool, timeline_name, item, start_frame, end_frame, selected_preset)
         if tl is None:
             warnings.append(f"Could not create timeline for {plan.clip_id}")
+            if callable(progress_cb):
+                progress_cb("Batch", idx_plan, total_plans, f"Echec timeline {idx_plan}/{total_plans}")
             continue
+
+        expected_duration_s = max(0.0, plan.end_seconds - plan.start_seconds)
+        preset_mode = str(selected_preset.get("mode", "single"))
+        _log_timeline_diagnostics(tl, plan, expected_duration_s, preset_mode)
 
         if plan.subtitle_path:
             subtitle_eligible += 1
@@ -2530,27 +3336,40 @@ def _build_from_manifest(
             if not sub_path.is_absolute():
                 sub_path = (root / sub_path).resolve()
             if not sub_path.exists():
-                warnings.append(f"Subtitle file missing for media pool import: {plan.clip_id}")
-                _log(f"subtitle_media_pool_missing clip={plan.clip_id} path={sub_path}")
+                warnings.append(f"Subtitle file missing for timeline import: {plan.clip_id}")
+                _log(f"subtitle_timeline_missing clip={plan.clip_id} path={sub_path}")
             else:
-                _ensure_batch_folder(media_pool, batch_id)
-                imported_sub, import_status = _ensure_media_item_with_status(media_pool, sub_path)
-                if imported_sub is None:
-                    warnings.append(f"Could not import subtitle in batch folder: {plan.clip_id}")
-                    _log(f"subtitle_media_pool_import_failed clip={plan.clip_id} path={sub_path}")
-                else:
+                ok_sub, sub_msg = _import_subtitles_to_timeline(
+                    project,
+                    media_pool,
+                    tl,
+                    sub_path,
+                    template_name=subtitle_template_name,
+                    offset_ms=subtitle_offset_ms,
+                )
+                if ok_sub:
                     subtitle_imported += 1
-                    if import_status == "already_exists":
-                        warnings.append(f"Subtitle already exists in Media Pool (not re-imported to batch folder): {plan.clip_id}")
-                        _log(f"subtitle_media_pool_already_exists clip={plan.clip_id} path={sub_path}")
-                    else:
-                        _log(f"subtitle_media_pool_imported clip={plan.clip_id} path={sub_path}")
+                    _log(f"subtitle_timeline_import_ok clip={plan.clip_id} msg={sub_msg}")
+                    _log_timeline_diagnostics(tl, plan, expected_duration_s, preset_mode + "+sub")
+                else:
+                    warnings.append(f"Subtitle timeline import failed for {plan.clip_id}: {sub_msg}")
+                    _log(f"subtitle_timeline_import_failed clip={plan.clip_id} msg={sub_msg}")
+            if callable(progress_cb):
+                progress_cb(
+                    "Application sous-titres",
+                    subtitle_imported,
+                    max(1, subtitle_eligible),
+                    f"Sous-titres timeline {subtitle_imported}/{max(1, subtitle_eligible)}",
+                )
         elif require_subtitles:
             warnings.append(f"Subtitle missing in manifest for {plan.clip_id}")
 
         created_timelines.append(tl)
         plan_map[_plan_key(plan)] = plan
         resolved_source_by_clip[_plan_key(plan)] = src
+        source_fps_by_clip[_plan_key(plan)] = source_fps
+        if callable(progress_cb):
+            progress_cb("Batch", idx_plan, total_plans, f"Timeline {idx_plan}/{total_plans}")
 
     master_tl = None
     if created_timelines:
@@ -2563,8 +3382,9 @@ def _build_from_manifest(
                 item = _ensure_media_item(media_pool, src) if src and src.exists() else None
                 if not item:
                     continue
-                start_frame = int(round(plan.start_seconds * fps))
-                end_frame = int(round(plan.end_seconds * fps))
+                source_fps = source_fps_by_clip.get(_plan_key(plan), float(max(1, project_fps)))
+                start_frame = int(round(plan.start_seconds * source_fps))
+                end_frame = int(round(plan.end_seconds * source_fps))
                 if end_frame <= start_frame:
                     continue
                 _append_clip_range(media_pool, master_tl, item, start_frame, end_frame, track_index=1)
@@ -2587,6 +3407,9 @@ def _build_from_manifest(
         elif subtitle_imported == 0:
             warnings.append("Subtitle import did not succeed on any timeline.")
         _log(f"subtitle_import_summary eligible={subtitle_eligible} imported={subtitle_imported}")
+
+    if callable(progress_cb):
+        progress_cb("Batch", total_plans, total_plans, "Batch termine")
 
     return batch_id, plan_map, created_timelines, warnings
 
@@ -3055,9 +3878,21 @@ def run() -> int:
         use_transcript_for_selection = bool(params.get("use_transcript_for_selection", False))
         strict_manifest = bool(params.get("strict_manifest", False))
         require_subtitles = bool(params.get("require_subtitles", False))
+        preview_safe_quality = bool(params.get("preview_safe_quality", True))
+        generate_optimized_media_quality = bool(params.get("generate_optimized_media_quality", True))
+        subtitle_template_name = str(params.get("subtitle_template_name", SUBTITLE_TEMPLATE_AUTO_LABEL) or SUBTITLE_TEMPLATE_AUTO_LABEL)
+        try:
+            subtitle_offset_ms = int(float(str(params.get("subtitle_offset_ms", "-500") or "-500")))
+        except Exception:
+            subtitle_offset_ms = -500
         vod_dir_raw = str(params.get("vod_dir", "")).strip()
         user_vod_dir = Path(vod_dir_raw) if vod_dir_raw else None
         detected_vod = session.get("detected_vod")
+        progress_cb = params.get("_progress_cb")
+
+        selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_id, {}))
+        if not selected_preset:
+            return {"message": f"Preset not found: {preset_id}", "warnings": []}
 
         if strict_manifest and bool(session.get("used_manifest_fallback", False)):
             fallback_msg = "Auto Subtitles canceled: manifest generation failed at startup and fallback manifest is in use. Relaunch script to regenerate a fresh manifest."
@@ -3067,17 +3902,61 @@ def run() -> int:
         if require_subtitles:
             if detected_vod is None or not Path(detected_vod).exists():
                 return {"message": "Auto Subtitles requires a detected VOD source. Select a clip in Resolve and relaunch.", "warnings": []}
-            try:
-                manifest_path = _generate_manifest_for_vod(
+            if preview_safe_quality:
+                if callable(progress_cb):
+                    progress_cb("Batch+Subtitles", 1, 100, "Application preview-safe mode")
+                preview_warnings = _apply_preview_safe_playback(project)
+            else:
+                preview_warnings = []
+            detected_vod_path = Path(detected_vod)
+            reusable_manifest: Path | None = None
+            transcript_path = _transcript_path_for_vod(root, detected_vod_path)
+            transcript_ok = transcript_path.exists()
+            if callable(progress_cb):
+                progress_cb("Batch+Subtitles", 3 if transcript_ok else 1, 100, "Verification transcript cache")
+            if not transcript_ok:
+                try:
+                    from short_editor.transcription import ensure_transcript
+
+                    ensure_transcript(detected_vod_path, _load_pipeline_config(root), root / "output" / "transcripts")
+                    transcript_ok = transcript_path.exists()
+                    _log(f"quality_transcript_generated path={transcript_path}")
+                except Exception as exc:
+                    _log(f"quality_transcript_generation_failed err={exc}")
+            else:
+                _log(f"quality_transcript_cache_hit path={transcript_path}")
+
+            if transcript_ok:
+                reusable_manifest = _find_reusable_quality_manifest(
                     root,
-                    Path(detected_vod),
-                    generate_subtitles=True,
-                    use_transcript_for_selection=use_transcript_for_selection,
+                    detected_vod_path,
+                    preset_id,
+                    use_transcript_for_selection,
                 )
-                session["manifest"] = manifest_path
-                session["used_manifest_fallback"] = False
-                session["use_transcript_for_selection"] = use_transcript_for_selection
-                _log(f"Regenerated manifest with subtitles: {manifest_path}")
+                if reusable_manifest is not None:
+                    manifest_path = reusable_manifest
+                    session["manifest"] = manifest_path
+                    session["used_manifest_fallback"] = False
+                    session["use_transcript_for_selection"] = use_transcript_for_selection
+                    _log(f"quality_manifest_cache_hit manifest={manifest_path}")
+                    if callable(progress_cb):
+                        progress_cb("Batch+Subtitles", 15, 100, "Manifest + sous-titres cache reutilises")
+                else:
+                    _log("quality_manifest_cache_miss")
+            try:
+                if reusable_manifest is None:
+                    manifest_path = _generate_manifest_for_vod(
+                        root,
+                        detected_vod_path,
+                        generate_subtitles=True,
+                        use_transcript_for_selection=use_transcript_for_selection,
+                        progress_cb=progress_cb,
+                        preset_id=preset_id,
+                    )
+                    session["manifest"] = manifest_path
+                    session["used_manifest_fallback"] = False
+                    session["use_transcript_for_selection"] = use_transcript_for_selection
+                    _log(f"Regenerated manifest with subtitles: {manifest_path}")
             except Exception as exc:
                 msg = f"Auto subtitle manifest generation failed: {exc}"
                 _log(msg)
@@ -3091,6 +3970,8 @@ def run() -> int:
                     Path(detected_vod),
                     generate_subtitles=False,
                     use_transcript_for_selection=True,
+                    progress_cb=progress_cb,
+                    preset_id=preset_id,
                 )
                 session["manifest"] = manifest_path
                 session["used_manifest_fallback"] = False
@@ -3100,10 +3981,6 @@ def run() -> int:
                 msg = f"Transcript selection manifest generation failed: {exc}"
                 _log(msg)
                 return {"message": msg, "warnings": [msg]}
-
-        selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_id, {}))
-        if not selected_preset:
-            return {"message": f"Preset not found: {preset_id}", "warnings": []}
 
         batch_id, plan_map, timelines, warnings = _build_from_manifest(
             root,
@@ -3119,7 +3996,29 @@ def run() -> int:
             detected_vod_path=detected_vod,
             user_vod_dir=user_vod_dir,
             require_subtitles=require_subtitles,
+            subtitle_template_name=subtitle_template_name,
+            subtitle_offset_ms=subtitle_offset_ms,
+            progress_cb=progress_cb,
         )
+
+        if require_subtitles and generate_optimized_media_quality:
+            try:
+                opt_warnings, opt_report = _generate_optimized_media_for_batch(
+                    root,
+                    project,
+                    media_pool,
+                    batch_id,
+                    timelines,
+                    progress_cb=progress_cb,
+                )
+                warnings.extend(opt_warnings)
+                warnings.append(f"Optimized media report: {opt_report}")
+            except Exception as exc:
+                warnings.append(f"Optimized media generation failed: {exc}")
+                _log(f"optimized_media_generation_failed err={exc}")
+
+        if require_subtitles and preview_safe_quality:
+            warnings.extend(preview_warnings)
         session["batch_id"] = batch_id
         session["manifest"] = manifest_path
         session["plan_map"] = plan_map
@@ -3143,9 +4042,15 @@ def run() -> int:
         preset_id = str(params["preset_id"])
         transcript_query = str(params["query"])
         use_transcript_for_selection = bool(params.get("use_transcript_for_selection", False))
+        subtitle_template_name = str(params.get("subtitle_template_name", SUBTITLE_TEMPLATE_AUTO_LABEL) or SUBTITLE_TEMPLATE_AUTO_LABEL)
+        try:
+            subtitle_offset_ms = int(float(str(params.get("subtitle_offset_ms", "-500") or "-500")))
+        except Exception:
+            subtitle_offset_ms = -500
         vod_dir_raw = str(params.get("vod_dir", "")).strip()
         user_vod_dir = Path(vod_dir_raw) if vod_dir_raw else None
         detected_vod = session.get("detected_vod")
+        progress_cb = params.get("_progress_cb")
         selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_id, {}))
         if not selected_preset:
             return {"message": f"Preset not found: {preset_id}", "warnings": []}
@@ -3159,6 +4064,7 @@ def run() -> int:
                     Path(detected_vod),
                     generate_subtitles=False,
                     use_transcript_for_selection=True,
+                    progress_cb=progress_cb,
                 )
                 session["manifest"] = manifest_path
                 session["used_manifest_fallback"] = False
@@ -3183,6 +4089,9 @@ def run() -> int:
             detected_vod_path=detected_vod,
             user_vod_dir=user_vod_dir,
             require_subtitles=False,
+            subtitle_template_name=subtitle_template_name,
+            subtitle_offset_ms=subtitle_offset_ms,
+            progress_cb=progress_cb,
         )
         session["batch_id"] = batch_id
         session["manifest"] = manifest_path

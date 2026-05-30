@@ -38,6 +38,14 @@
       "fallback_intro_skip_minutes": 8,
       "music_only_voice_floor_ratio": 0.45
     },
+    "trim_dead_air": {
+      "enabled": true,
+      "window_ms": 500,
+      "threshold_percentile": 0.4,
+      "headroom_ms": 350,
+      "max_trim_start_seconds": 6.0,
+      "max_trim_end_seconds": 6.0
+    },
     "render": {
       "base_track": 6
     },
@@ -98,11 +106,15 @@
     "compute_type": "int8",
     "style_profile_version": "social-fr-v1",
     "max_lines": 2,
-    "max_chars_per_line": 36,
-    "min_duration_ms": 700,
-    "max_duration_ms": 2200,
-    "max_hold_ms": 2600,
-    "cps_target": 16,
+    "max_chars_per_line": 24,
+    "min_duration_ms": 400,
+    "max_duration_ms": 1200,
+    "max_hold_ms": 1400,
+    "cps_target": 18,
+    "min_words_per_chunk": 2,
+    "preferred_words_per_chunk": 3,
+    "max_words_per_chunk": 4,
+    "min_inter_chunk_gap_ms": 40,
     "remove_fillers": true,
     "highlight_active_word": true
   },

@@ -7,6 +7,7 @@ from typing import Any
 
 
 FILLER_RE = re.compile(r"\b(euh+|heu+|hum+|bah+|ben+|genre|du coup|en fait)\b", re.IGNORECASE)
+WORD_RE = re.compile(r"[\w]+(?:['’][\w]+)?", re.UNICODE)
 
 
 def _ts(seconds: float) -> str:
@@ -19,11 +20,23 @@ def _ts(seconds: float) -> str:
 
 def _clean_text(text: str, remove_fillers: bool) -> str:
     t = " ".join(text.split())
+    t = re.sub(r"(\b\w+)\s+(['’])\s*(\w+\b)", r"\1\2\3", t)
+    t = re.sub(r"\s+(['’])", r"\1", t)
     if remove_fillers:
         t = FILLER_RE.sub("", t)
         t = " ".join(t.split())
+    t = re.sub(r"([,.;:!?])\1+", r"\1", t)
     t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+    t = re.sub(r"([,.;:!?])(\w)", r"\1 \2", t)
     return t.strip()
+
+
+def _word_count(text: str) -> int:
+    return len(WORD_RE.findall(text))
+
+
+def _has_word(text: str) -> bool:
+    return bool(WORD_RE.search(text))
 
 
 def _chunk_words(words: list[dict[str, Any]], cfg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -32,11 +45,17 @@ def _chunk_words(words: list[dict[str, Any]], cfg: dict[str, Any]) -> list[dict[
     max_dur = float(cfg.get("max_duration_ms", 2200)) / 1000.0
     max_hold = float(cfg.get("max_hold_ms", 2600)) / 1000.0
     cps_target = float(cfg.get("cps_target", 16.0))
+    min_words = max(1, int(cfg.get("min_words_per_chunk", 2)))
+    preferred_words = max(min_words, int(cfg.get("preferred_words_per_chunk", 3)))
+    max_words = max(preferred_words, int(cfg.get("max_words_per_chunk", 4)))
+    min_gap = max(0.0, float(cfg.get("min_inter_chunk_gap_ms", 40)) / 1000.0)
 
     out: list[dict[str, Any]] = []
     cur: list[dict[str, Any]] = []
+    last_end = 0.0
 
     def flush() -> None:
+        nonlocal last_end
         if not cur:
             return
         start = float(cur[0]["start"])
@@ -45,12 +64,19 @@ def _chunk_words(words: list[dict[str, Any]], cfg: dict[str, Any]) -> list[dict[
         if not text:
             cur.clear()
             return
+
+        if start < last_end + min_gap:
+            start = last_end + min_gap
+        if end <= start:
+            end = start + 0.1
+
         dur = max(0.1, end - start)
         if dur < min_dur:
             end = start + min_dur
             dur = min_dur
         if dur > max_hold:
             end = start + max_hold
+        last_end = end
         out.append({"start": start, "end": end, "text": text})
         cur.clear()
 
@@ -62,10 +88,21 @@ def _chunk_words(words: list[dict[str, Any]], cfg: dict[str, Any]) -> list[dict[
         start = float(cur[0]["start"])
         end = float(cur[-1]["end"])
         text = " ".join(str(x["word"]).strip() for x in cur).strip()
+        n_words = _word_count(text)
         dur = max(0.1, end - start)
         cps = len(text) / dur
-        should_break = len(text) >= max_chars or dur >= max_dur or cps > cps_target * 1.25
-        if token.endswith((".", "!", "?", ",", ";", ":")) and dur >= min_dur:
+        punctuation_strong = token.endswith((".", "!", "?", ";", ":"))
+        punctuation_weak = token.endswith((","))
+        should_break = False
+        if n_words >= max_words:
+            should_break = True
+        elif n_words >= preferred_words and (dur >= max_dur * 0.8 or cps > cps_target * 1.1):
+            should_break = True
+        elif len(text) >= max_chars or dur >= max_dur or cps > cps_target * 1.25:
+            should_break = True
+        elif punctuation_strong and n_words >= min_words:
+            should_break = True
+        elif punctuation_weak and n_words >= preferred_words and dur >= min_dur * 0.7:
             should_break = True
         if should_break:
             flush()
@@ -80,7 +117,7 @@ def _to_srt_lines(chunks: list[dict[str, Any]], cfg: dict[str, Any]) -> list[str
     idx = 1
     for c in chunks:
         text = _clean_text(str(c.get("text", "")), remove_fillers)
-        if not text:
+        if not text or not _has_word(text):
             continue
         if len(text) > max_line:
             split_at = text.rfind(" ", 0, max_line + 1)
@@ -94,7 +131,9 @@ def _to_srt_lines(chunks: list[dict[str, Any]], cfg: dict[str, Any]) -> list[str
 def _segment_chunks(entries: list[dict[str, Any]], clip_start: float, clip_end: float, cfg: dict[str, Any]) -> list[dict[str, Any]]:
     min_dur = float(cfg.get("min_duration_ms", 700)) / 1000.0
     max_hold = float(cfg.get("max_hold_ms", 2600)) / 1000.0
+    min_gap = max(0.0, float(cfg.get("min_inter_chunk_gap_ms", 40)) / 1000.0)
     out: list[dict[str, Any]] = []
+    last_end = 0.0
     for e in entries:
         try:
             es = float(e.get("start", 0.0))
@@ -108,10 +147,15 @@ def _segment_chunks(entries: list[dict[str, Any]], clip_start: float, clip_end: 
             continue
         start_local = max(0.0, es - clip_start)
         end_local = max(start_local + 0.1, min(clip_end, ee) - clip_start)
+        if start_local < last_end + min_gap:
+            start_local = last_end + min_gap
+        if end_local <= start_local:
+            end_local = start_local + 0.1
         if end_local - start_local < min_dur:
             end_local = start_local + min_dur
         if end_local - start_local > max_hold:
             end_local = start_local + max_hold
+        last_end = end_local
         out.append({"start": start_local, "end": end_local, "text": text})
     return out
 
