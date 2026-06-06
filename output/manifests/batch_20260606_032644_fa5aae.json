@@ -1,0 +1,147 @@
+{
+  "batch_id": "batch_20260606_032644_fa5aae",
+  "source_vods": [
+    "E:\\2026-06-01 20-08-34.mp4"
+  ],
+  "clips": [
+    {
+      "clip_id": "2026-06-01 20-08-34__chapter_0001",
+      "display_name": "Chapitre 1",
+      "source_path": "E:\\2026-06-01 20-08-34.mp4",
+      "start_seconds": 1124.15,
+      "end_seconds": 1157.35,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker;trim=voice",
+      "overflow": false,
+      "subtitle_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\subtitles\\batch_20260606_032644_fa5aae\\Chapitre 1.srt",
+      "timeline_name": "batch_20260606_032644_fa5aae__Chapitre 1"
+    },
+    {
+      "clip_id": "2026-06-01 20-08-34__chapter_0002",
+      "display_name": "Chapitre 2",
+      "source_path": "E:\\2026-06-01 20-08-34.mp4",
+      "start_seconds": 1461.65,
+      "end_seconds": 1496.55,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker;trim=voice",
+      "overflow": false,
+      "subtitle_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\subtitles\\batch_20260606_032644_fa5aae\\Chapitre 2.srt",
+      "timeline_name": "batch_20260606_032644_fa5aae__Chapitre 2"
+    },
+    {
+      "clip_id": "2026-06-01 20-08-34__chapter_0003",
+      "display_name": "Chapitre 3",
+      "source_path": "E:\\2026-06-01 20-08-34.mp4",
+      "start_seconds": 5513.15,
+      "end_seconds": 5547.9,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker;trim=voice",
+      "overflow": false,
+      "subtitle_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\subtitles\\batch_20260606_032644_fa5aae\\Chapitre 3.srt",
+      "timeline_name": "batch_20260606_032644_fa5aae__Chapitre 3"
+    },
+    {
+      "clip_id": "2026-06-01 20-08-34__chapter_0004",
+      "display_name": "Chapitre 4",
+      "source_path": "E:\\2026-06-01 20-08-34.mp4",
+      "start_seconds": 8928.2,
+      "end_seconds": 8963.2,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "subtitle_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\subtitles\\batch_20260606_032644_fa5aae\\Chapitre 4.srt",
+      "timeline_name": "batch_20260606_032644_fa5aae__Chapitre 4"
+    },
+    {
+      "clip_id": "2026-06-01 20-08-34__fallback_0000",
+      "display_name": "Auto 1",
+      "source_path": "E:\\2026-06-01 20-08-34.mp4",
+      "start_seconds": 6079.29,
+      "end_seconds": 6119.29,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.9448,
+      "reason": "No chapters found: audio peak + activity (hook=0.93; transcript_discovery;funny=1;clivant=3;etonnant=1;matched=240,apr,autres,c'est)",
+      "overflow": false,
+      "subtitle_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\subtitles\\batch_20260606_032644_fa5aae\\Auto 1.srt",
+      "timeline_name": "batch_20260606_032644_fa5aae__Auto 1"
+    },
+    {
+      "clip_id": "2026-06-01 20-08-34__fallback_0001",
+      "display_name": "Auto 2",
+      "source_path": "E:\\2026-06-01 20-08-34.mp4",
+      "start_seconds": 5795.75,
+      "end_seconds": 5835.75,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.9024,
+      "reason": "No chapters found: audio peak + activity (hook=0.97; transcript_discovery;clivant=3;etonnant=2;matched=base,big,bon,c'est)",
+      "overflow": false,
+      "subtitle_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\subtitles\\batch_20260606_032644_fa5aae\\Auto 2.srt",
+      "timeline_name": "batch_20260606_032644_fa5aae__Auto 2"
+    },
+    {
+      "clip_id": "2026-06-01 20-08-34__fallback_0002",
+      "display_name": "Auto 3",
+      "source_path": "E:\\2026-06-01 20-08-34.mp4",
+      "start_seconds": 6104.39,
+      "end_seconds": 6144.39,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.8991,
+      "reason": "No chapters found: audio peak + activity (hook=1.22; transcript_discovery;funny=1;clivant=2;etonnant=1;matched=alors,apr,beaucoup,c'est)",
+      "overflow": false,
+      "subtitle_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\subtitles\\batch_20260606_032644_fa5aae\\Auto 3.srt",
+      "timeline_name": "batch_20260606_032644_fa5aae__Auto 3"
+    },
+    {
+      "clip_id": "2026-06-01 20-08-34__fallback_0008",
+      "display_name": "Auto 4",
+      "source_path": "E:\\2026-06-01 20-08-34.mp4",
+      "start_seconds": 5770.65,
+      "end_seconds": 5810.52,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.8438,
+      "reason": "No chapters found: audio peak + activity (hook=1.04; transcript_discovery;clivant=1;etonnant=2;matched=ambiances,assez,ature,atypique);trim=voice",
+      "overflow": false,
+      "subtitle_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\subtitles\\batch_20260606_032644_fa5aae\\Auto 4.srt",
+      "timeline_name": "batch_20260606_032644_fa5aae__Auto 4"
+    }
+  ],
+  "pipeline_version": "0.1.0",
+  "meta": {
+    "source_vod_path": "E:\\2026-06-01 20-08-34.mp4",
+    "preset_id": "Just chatting",
+    "subtitle_preset_id": "Minimal clean",
+    "generated_with_subtitles": true,
+    "use_transcript_for_selection": false,
+    "transcript_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\transcripts\\2026-06-01 20-08-34.json",
+    "transcript_exists_pre_generation": true
+  },
+  "warnings": [
+    "2026-06-01 20-08-34.mp4: Skipped chapter 0 at 0.000s: auto_start_chapter_0",
+    "2026-06-01 20-08-34__chapter_0001: dead-air trim 1122.35-1157.35s -> 1124.15-1157.35s",
+    "2026-06-01 20-08-34__chapter_0002: dead-air trim 1461.55-1496.55s -> 1461.65-1496.55s",
+    "2026-06-01 20-08-34__chapter_0003: dead-air trim 5512.90-5547.90s -> 5513.15-5547.90s",
+    "2026-06-01 20-08-34__fallback_0008: dead-air trim 5770.52-5810.52s -> 5770.65-5810.52s"
+  ],
+  "quota_summary": [
+    {
+      "vod": "2026-06-01 20-08-34.mp4",
+      "target_quota": 8,
+      "max_quota": 9,
+      "chapter_used": 4,
+      "fallback_added": 4,
+      "total_selected": 8
+    }
+  ]
+}

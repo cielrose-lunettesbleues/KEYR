@@ -195,6 +195,14 @@ def _overlap_ratio(a: ClipCandidate, b: ClipCandidate) -> float:
     return inter / shortest
 
 
+def _clips_too_close(a: ClipCandidate, b: ClipCandidate, overlap_threshold: float, min_center_distance_seconds: float = 60.0) -> bool:
+    if _overlap_ratio(a, b) > overlap_threshold:
+        return True
+    a_center = a.start_seconds + ((a.end_seconds - a.start_seconds) / 2.0)
+    b_center = b.start_seconds + ((b.end_seconds - b.start_seconds) / 2.0)
+    return abs(a_center - b_center) < min_center_distance_seconds
+
+
 def _select_non_overlapping_fallback(
     existing: list[ClipCandidate],
     candidates: list[ClipCandidate],
@@ -205,8 +213,8 @@ def _select_non_overlapping_fallback(
         return []
     selected: list[ClipCandidate] = []
     for c in candidates:
-        too_close = any(_overlap_ratio(c, e) > overlap_threshold for e in existing)
-        too_close = too_close or any(_overlap_ratio(c, s) > overlap_threshold for s in selected)
+        too_close = any(_clips_too_close(c, e, overlap_threshold) for e in existing)
+        too_close = too_close or any(_clips_too_close(c, s, overlap_threshold) for s in selected)
         if too_close:
             continue
         selected.append(c)

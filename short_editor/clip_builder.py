@@ -109,6 +109,21 @@ def _overlap_ratio_from_ranges(a_start: float, a_end: float, b_start: float, b_e
     return inter / shortest
 
 
+def _ranges_too_close(
+    a_start: float,
+    a_end: float,
+    b_start: float,
+    b_end: float,
+    overlap_threshold: float = 0.35,
+    min_center_distance_seconds: float = 60.0,
+) -> bool:
+    if _overlap_ratio_from_ranges(a_start, a_end, b_start, b_end) > overlap_threshold:
+        return True
+    a_center = a_start + ((a_end - a_start) / 2.0)
+    b_center = b_start + ((b_end - b_start) / 2.0)
+    return abs(a_center - b_center) < min_center_distance_seconds
+
+
 def build_chapter_candidates(vod: VodManifest, cfg: dict) -> list[ClipCandidate]:
     video_cfg = cfg["video"]
     min_len = float(video_cfg["min_clip_seconds"])
@@ -676,11 +691,11 @@ def discover_fallback_candidates(vod: VodManifest, cfg: dict, work_dir: Path) ->
             score = (0.75 * energy_norm) + (0.25 * min(1.0, hook))
             scored_candidates.append((score, start, end, hook, "audio_safety_net"))
 
-    # De-duplicate near-identical ranges before truncating.
+    # De-duplicate nearby ranges before truncating; shifted 40s windows can still feel like the same moment.
     deduped: list[tuple[float, float, float, float, str]] = []
     for cand in sorted(scored_candidates, key=lambda x: x[0], reverse=True):
         _, s, e, _, _ = cand
-        if any(_overlap_ratio_from_ranges(s, e, ds, de) > 0.85 for _, ds, de, _, _ in deduped):
+        if any(_ranges_too_close(s, e, ds, de) for _, ds, de, _, _ in deduped):
             continue
         deduped.append(cand)
 

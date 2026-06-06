@@ -25,6 +25,7 @@ DEFAULT_FPS = 60
 STANDALONE_CAPTION_TEMPLATE_NAME = "ShortEditor Caption"
 STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME = "AutoSubs Caption"
 SUBTITLE_TEMPLATE_AUTO_LABEL = "Auto-detect (Recommended)"
+DEFAULT_SUBTITLE_PRESET_ID = "Minimal clean"
 
 def _load_resolve() -> Any:
     # Strategy 1: direct module import (works on many installs)
@@ -155,19 +156,23 @@ def _default_presets() -> dict[str, Any]:
             "valo": {
                 "label": "Valo",
                 "active_preset": "Valorant Preset",
+                "active_subtitle_preset": DEFAULT_SUBTITLE_PRESET_ID,
                 "max_transcript_clip_seconds": 45,
             },
             "jeu": {
                 "label": "Jeu",
                 "active_preset": "Jeux",
+                "active_subtitle_preset": DEFAULT_SUBTITLE_PRESET_ID,
                 "max_transcript_clip_seconds": 45,
             },
             "react": {
                 "label": "React",
                 "active_preset": "Just chatting",
+                "active_subtitle_preset": DEFAULT_SUBTITLE_PRESET_ID,
                 "max_transcript_clip_seconds": 45,
             },
         },
+        "subtitle_presets": _default_subtitle_presets(),
         "presets": {
             "Valorant Preset": {
                 "name": "Valorant Preset",
@@ -265,6 +270,120 @@ def _default_presets() -> dict[str, Any]:
     }
 
 
+def _default_subtitle_presets() -> dict[str, Any]:
+    return {
+        DEFAULT_SUBTITLE_PRESET_ID: {
+            "name": DEFAULT_SUBTITLE_PRESET_ID,
+            "font": "Arial",
+            "font_style": "Bold",
+            "font_size": 0.085,
+            "color": "#FFFFFF",
+            "position_x": 0.5,
+            "position_y": 0.82,
+            "words_per_subtitle": 3,
+            "max_chars_per_line": 24,
+            "subtitle_template_name": SUBTITLE_TEMPLATE_AUTO_LABEL,
+            "subtitle_offset_ms": -500,
+        },
+        "Punchy jaune": {
+            "name": "Punchy jaune",
+            "font": "Arial",
+            "font_style": "Bold",
+            "font_size": 0.095,
+            "color": "#FFF04A",
+            "position_x": 0.5,
+            "position_y": 0.78,
+            "words_per_subtitle": 2,
+            "max_chars_per_line": 20,
+            "subtitle_template_name": SUBTITLE_TEMPLATE_AUTO_LABEL,
+            "subtitle_offset_ms": -500,
+        },
+    }
+
+
+def _normalize_subtitle_presets(data: dict[str, Any]) -> bool:
+    changed = False
+    defaults = _default_subtitle_presets()
+    subtitle_presets = data.get("subtitle_presets", {}) if isinstance(data, dict) else {}
+    if not isinstance(subtitle_presets, dict):
+        subtitle_presets = {}
+        changed = True
+    for preset_id, preset_data in defaults.items():
+        if preset_id not in subtitle_presets or not isinstance(subtitle_presets.get(preset_id), dict):
+            subtitle_presets[preset_id] = dict(preset_data)
+            changed = True
+    data["subtitle_presets"] = subtitle_presets
+
+    profiles = data.get("profiles", {}) if isinstance(data.get("profiles", {}), dict) else {}
+    for profile_data in profiles.values():
+        if not isinstance(profile_data, dict):
+            continue
+        active = str(profile_data.get("active_subtitle_preset", "")).strip()
+        if not active or active not in subtitle_presets:
+            profile_data["active_subtitle_preset"] = DEFAULT_SUBTITLE_PRESET_ID
+            changed = True
+    data["profiles"] = profiles
+    return changed
+
+
+def _coerce_float(value: Any, default: float, min_value: float | None = None, max_value: float | None = None) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        out = default
+    if min_value is not None and out < min_value:
+        out = min_value
+    if max_value is not None and out > max_value:
+        out = max_value
+    return out
+
+
+def _coerce_int(value: Any, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
+    try:
+        out = int(float(str(value).strip()))
+    except Exception:
+        out = default
+    if min_value is not None and out < min_value:
+        out = min_value
+    if max_value is not None and out > max_value:
+        out = max_value
+    return out
+
+
+def _subtitle_preset_captions_overrides(preset: dict[str, Any]) -> dict[str, Any]:
+    words = _coerce_int(preset.get("words_per_subtitle", 3), 3, 1, 8)
+    max_chars = _coerce_int(preset.get("max_chars_per_line", 24), 24, 8, 80)
+    return {
+        "min_words_per_chunk": 1,
+        "preferred_words_per_chunk": words,
+        "max_words_per_chunk": words,
+        "max_chars_per_line": max_chars,
+    }
+
+
+def _merge_subtitle_preset_into_config(cfg: dict[str, Any], subtitle_preset: dict[str, Any] | None) -> dict[str, Any]:
+    if not subtitle_preset:
+        return cfg
+    out = dict(cfg)
+    captions = dict(out.get("captions", {}) if isinstance(out.get("captions", {}), dict) else {})
+    captions.update(_subtitle_preset_captions_overrides(subtitle_preset))
+    out["captions"] = captions
+    return out
+
+
+def _subtitle_style_from_preset(preset: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(preset, dict):
+        return {}
+    return {
+        "font": str(preset.get("font", "Arial")).strip() or "Arial",
+        "font_style": str(preset.get("font_style", "Bold")).strip() or "Bold",
+        "font_size": _coerce_float(preset.get("font_size", 0.085), 0.085, 0.01, 0.5),
+        "color": str(preset.get("color", "#FFFFFF")).strip() or "#FFFFFF",
+        "position_x": _coerce_float(preset.get("position_x", 0.5), 0.5, 0.0, 1.0),
+        "position_y": _coerce_float(preset.get("position_y", 0.82), 0.82, 0.0, 1.0),
+    }
+
+
 def _load_or_init_presets(root: Path) -> dict[str, Any]:
     path = _presets_path(root)
     if not path.exists():
@@ -283,11 +402,13 @@ def _load_or_init_presets(root: Path) -> dict[str, Any]:
         presets = {}
     if not isinstance(profiles, dict):
         profiles = {}
+    data["presets"] = presets
+    data["profiles"] = profiles
+    changed = _normalize_subtitle_presets(data)
 
     preset_ids = list(presets.keys())
     if preset_ids:
         fallback_preset = preset_ids[0]
-        changed = False
         for profile_name, profile_data in profiles.items():
             if not isinstance(profile_data, dict):
                 continue
@@ -304,9 +425,9 @@ def _load_or_init_presets(root: Path) -> dict[str, Any]:
             )
             profile_data["active_preset"] = preferred
             changed = True
-        if changed:
-            data["profiles"] = profiles
-            _save_presets(root, data)
+    if changed:
+        data["profiles"] = profiles
+        _save_presets(root, data)
     return data
 
 
@@ -487,7 +608,7 @@ def _manifest_has_valid_subtitles(root: Path, data: dict[str, Any]) -> bool:
     return True
 
 
-def _find_reusable_quality_manifest(root: Path, vod_path: Path, preset_id: str, use_transcript_for_selection: bool) -> Path | None:
+def _find_reusable_quality_manifest(root: Path, vod_path: Path, preset_id: str, use_transcript_for_selection: bool, subtitle_preset_id: str = "") -> Path | None:
     manifest_dir = root / "output" / "manifests"
     if not manifest_dir.exists():
         return None
@@ -501,6 +622,8 @@ def _find_reusable_quality_manifest(root: Path, vod_path: Path, preset_id: str, 
         if not bool(meta.get("generated_with_subtitles", False)):
             continue
         if str(meta.get("preset_id", "")).strip() != preset_id.strip():
+            continue
+        if subtitle_preset_id.strip() and str(meta.get("subtitle_preset_id", "")).strip() != subtitle_preset_id.strip():
             continue
         if bool(meta.get("use_transcript_for_selection", False)) != bool(use_transcript_for_selection):
             continue
@@ -543,6 +666,10 @@ def _ask_user_inputs(
 
         profiles = presets_data.get("profiles", {})
         presets = presets_data.get("presets", {})
+        subtitle_presets = presets_data.get("subtitle_presets", {})
+        if not isinstance(subtitle_presets, dict):
+            subtitle_presets = _default_subtitle_presets()
+            presets_data["subtitle_presets"] = subtitle_presets
         pm_ui = _safe_call(resolve, "GetProjectManager")
         project_ui = _safe_call(pm_ui, "GetCurrentProject") if pm_ui else None
         media_pool_ui = _safe_call(project_ui, "GetMediaPool") if project_ui else None
@@ -555,6 +682,9 @@ def _ask_user_inputs(
         profile_info = profiles.get(default_profile, {}) if isinstance(profiles, dict) else {}
         active_from_profile = str(profile_info.get("active_preset", "")).strip() if isinstance(profile_info, dict) else ""
         default_preset_id = active_from_profile if active_from_profile in presets else (preset_ids[0] if preset_ids else "")
+        subtitle_preset_ids = list(subtitle_presets.keys())
+        active_subtitle_from_profile = str(profile_info.get("active_subtitle_preset", "")).strip() if isinstance(profile_info, dict) else ""
+        default_subtitle_preset_id = active_subtitle_from_profile if active_subtitle_from_profile in subtitle_presets else (subtitle_preset_ids[0] if subtitle_preset_ids else DEFAULT_SUBTITLE_PRESET_ID)
         keys = ("zoom_x", "zoom_y", "pan", "tilt", "crop_top", "crop_bottom", "crop_left", "crop_right")
 
         colors = {
@@ -580,6 +710,7 @@ def _ask_user_inputs(
             "render_preset": preset_name,
             "profile": default_profile,
             "preset_id": default_preset_id,
+            "subtitle_preset_id": default_subtitle_preset_id,
             "query": "",
             "render_master": False,
             "subtitle_template_name": SUBTITLE_TEMPLATE_AUTO_LABEL,
@@ -891,14 +1022,165 @@ def _ask_user_inputs(
 
         ui_button(form, "Charger", load_current_preset).grid(row=4, column=2, padx=8, pady=6, sticky="w")
 
-        make_label("Recherche transcript", 5, 0)
         query_var = tk.StringVar(value="")
-        tk.Entry(form, textvariable=query_var, width=80, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=5, column=1, padx=8, pady=6, sticky="we")
-
         transcript_select_var = tk.BooleanVar(value=False)
         preview_safe_quality_var = tk.BooleanVar(value=True)
         subtitle_template_var = tk.StringVar(value=state["subtitle_template_name"])
         subtitle_offset_ms_var = tk.StringVar(value=state["subtitle_offset_ms"])
+        subtitle_preset_var = tk.StringVar(value=state["subtitle_preset_id"])
+        subtitle_preset_menu: Any | None = None
+
+        def refresh_subtitle_preset_menu() -> None:
+            try:
+                menu = subtitle_preset_menu["menu"]
+                menu.delete(0, "end")
+                for sid in subtitle_presets.keys():
+                    menu.add_command(label=sid, command=lambda value=sid: (subtitle_preset_var.set(value), load_subtitle_preset(value)))
+            except Exception:
+                pass
+
+        def load_subtitle_preset(sid: str) -> None:
+            p = dict(subtitle_presets.get(sid, {}))
+            if not p:
+                return
+            subtitle_template_var.set(str(p.get("subtitle_template_name", SUBTITLE_TEMPLATE_AUTO_LABEL)) or SUBTITLE_TEMPLATE_AUTO_LABEL)
+            subtitle_offset_ms_var.set(str(p.get("subtitle_offset_ms", -500)))
+            profile_key = profile_var.get().strip()
+            if profile_key:
+                profiles.setdefault(profile_key, {})["active_subtitle_preset"] = sid
+                presets_data["profiles"] = profiles
+                _save_presets(_repo_root(), presets_data)
+            fn = status_setter.get("fn")
+            if callable(fn):
+                fn(f"Preset sous-titres chargé: {sid}", warnings=[])
+
+        def selected_subtitle_preset() -> dict[str, Any]:
+            sid = subtitle_preset_var.get().strip()
+            return dict(subtitle_presets.get(sid, {}))
+
+        def open_subtitle_preset_editor() -> None:
+            sid = subtitle_preset_var.get().strip() or DEFAULT_SUBTITLE_PRESET_ID
+            base = dict(subtitle_presets.get(sid, _default_subtitle_presets()[DEFAULT_SUBTITLE_PRESET_ID]))
+            top = tk.Toplevel(root)
+            top.title("Éditeur preset sous-titres")
+            top.geometry("620x520")
+            top.configure(bg=colors["panel_alt"])
+            top.transient(root)
+
+            fields = tk.Frame(top, bg=colors["panel_alt"])
+            fields.pack(fill="both", expand=True, padx=10, pady=10)
+
+            name_var = tk.StringVar(value=sid)
+            font_var = tk.StringVar(value=str(base.get("font", "Arial")))
+            font_style_var = tk.StringVar(value=str(base.get("font_style", "Bold")))
+            font_size_var = tk.StringVar(value=str(base.get("font_size", 0.085)))
+            color_var = tk.StringVar(value=str(base.get("color", "#FFFFFF")))
+            pos_x_var = tk.StringVar(value=str(base.get("position_x", 0.5)))
+            pos_y_var = tk.StringVar(value=str(base.get("position_y", 0.82)))
+            words_var = tk.StringVar(value=str(base.get("words_per_subtitle", 3)))
+            chars_var = tk.StringVar(value=str(base.get("max_chars_per_line", 24)))
+            template_var = tk.StringVar(value=str(base.get("subtitle_template_name", subtitle_template_var.get() or SUBTITLE_TEMPLATE_AUTO_LABEL)))
+            offset_var = tk.StringVar(value=str(base.get("subtitle_offset_ms", subtitle_offset_ms_var.get() or -500)))
+
+            rows = [
+                ("Nom", name_var, "entry"),
+                ("Police", font_var, "entry"),
+                ("Style police", font_style_var, "entry"),
+                ("Taille", font_size_var, "entry"),
+                ("Couleur #RRGGBB", color_var, "entry"),
+                ("Position X (0..1)", pos_x_var, "entry"),
+                ("Position Y (0..1)", pos_y_var, "entry"),
+                ("Mots par sous-titre", words_var, "entry"),
+                ("Caractères par ligne", chars_var, "entry"),
+                ("Modèle Text+", template_var, "menu"),
+                ("Décalage ms", offset_var, "entry"),
+            ]
+            for idx, (label, var, kind) in enumerate(rows):
+                tk.Label(fields, text=f"♡ {label}", bg=colors["panel_alt"], fg=colors["ink"], font=("Tahoma", 9, "bold")).grid(row=idx, column=0, sticky="w", padx=6, pady=5)
+                if kind == "menu":
+                    opt = tk.OptionMenu(fields, var, *subtitle_template_options)
+                    opt.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"])
+                    opt.grid(row=idx, column=1, sticky="w", padx=6, pady=5)
+                else:
+                    tk.Entry(fields, textvariable=var, width=34, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"]).grid(row=idx, column=1, sticky="w", padx=6, pady=5)
+
+            hint = tk.Label(top, text="Position: X=0 gauche, 0.5 centre, 1 droite | Y=0 bas, 1 haut selon Fusion/Resolve.", bg=colors["panel_alt"], fg=colors["ink"], anchor="w")
+            hint.pack(fill="x", padx=10, pady=(0, 6))
+
+            def build_preset() -> dict[str, Any] | None:
+                name = name_var.get().strip()
+                if not name:
+                    messagebox.showerror("Short Editor", "Nom de preset sous-titres vide")
+                    return None
+                return {
+                    "name": name,
+                    "font": font_var.get().strip() or "Arial",
+                    "font_style": font_style_var.get().strip() or "Bold",
+                    "font_size": _coerce_float(font_size_var.get(), 0.085, 0.01, 0.5),
+                    "color": color_var.get().strip() or "#FFFFFF",
+                    "position_x": _coerce_float(pos_x_var.get(), 0.5, 0.0, 1.0),
+                    "position_y": _coerce_float(pos_y_var.get(), 0.82, 0.0, 1.0),
+                    "words_per_subtitle": _coerce_int(words_var.get(), 3, 1, 8),
+                    "max_chars_per_line": _coerce_int(chars_var.get(), 24, 8, 80),
+                    "subtitle_template_name": template_var.get().strip() or SUBTITLE_TEMPLATE_AUTO_LABEL,
+                    "subtitle_offset_ms": _coerce_int(offset_var.get(), -500, -5000, 5000),
+                }
+
+            def save_subtitle_preset() -> None:
+                p = build_preset()
+                if p is None:
+                    return
+                name = str(p["name"])
+                subtitle_presets[name] = p
+                presets_data["subtitle_presets"] = subtitle_presets
+                profiles.setdefault(profile_var.get().strip(), {})["active_subtitle_preset"] = name
+                _save_presets(_repo_root(), presets_data)
+                subtitle_preset_var.set(name)
+                subtitle_template_var.set(str(p.get("subtitle_template_name", SUBTITLE_TEMPLATE_AUTO_LABEL)))
+                subtitle_offset_ms_var.set(str(p.get("subtitle_offset_ms", -500)))
+                refresh_subtitle_preset_menu()
+                set_status(f"Preset sous-titres enregistré: {name}", warnings=[])
+                messagebox.showinfo("Short Editor", f"Preset sous-titres enregistré: {name}")
+
+            def delete_subtitle_preset() -> None:
+                name = name_var.get().strip()
+                if name not in subtitle_presets:
+                    return
+                if len(subtitle_presets) <= 1:
+                    messagebox.showwarning("Short Editor", "Impossible de supprimer le dernier preset sous-titres.")
+                    return
+                if not messagebox.askyesno("Supprimer", f"Supprimer le preset sous-titres '{name}' ?"):
+                    return
+                del subtitle_presets[name]
+                replacement = next(iter(subtitle_presets.keys()))
+                for profile_data in profiles.values():
+                    if isinstance(profile_data, dict) and profile_data.get("active_subtitle_preset") == name:
+                        profile_data["active_subtitle_preset"] = replacement
+                presets_data["subtitle_presets"] = subtitle_presets
+                _save_presets(_repo_root(), presets_data)
+                subtitle_preset_var.set(replacement)
+                load_subtitle_preset(replacement)
+                refresh_subtitle_preset_menu()
+                top.destroy()
+                set_status(f"Preset sous-titres supprimé: {name}", warnings=[])
+
+            controls = tk.Frame(top, bg=colors["panel_alt"])
+            controls.pack(fill="x", padx=10, pady=(0, 10))
+            ui_button(controls, "Enregistrer", save_subtitle_preset, primary=True).pack(side="right", padx=4)
+            ui_button(controls, "Supprimer", delete_subtitle_preset, primary=False).pack(side="right", padx=4)
+            ui_button(controls, "Fermer", top.destroy, primary=False).pack(side="right", padx=4)
+
+        make_label("Preset sous-titres", 5, 0)
+        subtitle_preset_row = tk.Frame(form, bg=colors["panel_alt"])
+        subtitle_preset_row.grid(row=5, column=1, padx=8, pady=6, sticky="w")
+        subtitle_preset_menu = tk.OptionMenu(subtitle_preset_row, subtitle_preset_var, *list(subtitle_presets.keys()))
+        subtitle_preset_menu.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"])
+        subtitle_preset_menu.pack(side="left", padx=(0, 8))
+        ui_button(subtitle_preset_row, "Charger", lambda: load_subtitle_preset(subtitle_preset_var.get().strip()), primary=False).pack(side="left", padx=(0, 6))
+        ui_button(subtitle_preset_row, "Éditer", open_subtitle_preset_editor, primary=False).pack(side="left")
+
+        make_label("Recherche transcript", 6, 0)
+        tk.Entry(form, textvariable=query_var, width=80, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=6, column=1, padx=8, pady=6, sticky="we")
 
         def open_keywords_editor() -> None:
             try:
@@ -997,7 +1279,7 @@ def _ask_user_inputs(
                 set_status(f"Erreur éditeur mots-clés: {exc}")
 
         transcript_opts = tk.Frame(form, bg=colors["panel_alt"])
-        transcript_opts.grid(row=6, column=1, padx=8, pady=6, sticky="w")
+        transcript_opts.grid(row=7, column=1, padx=8, pady=6, sticky="w")
         tk.Checkbutton(
             transcript_opts,
             text="Utiliser le transcript pour sélectionner les clips",
@@ -1019,13 +1301,13 @@ def _ask_user_inputs(
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0))
 
-        make_label("Modèle de sous-titres", 7, 0)
+        make_label("Modèle de sous-titres", 8, 0)
         subtitle_template_menu = tk.OptionMenu(form, subtitle_template_var, *subtitle_template_options)
         subtitle_template_menu.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"])
-        subtitle_template_menu.grid(row=7, column=1, padx=8, pady=6, sticky="w")
+        subtitle_template_menu.grid(row=8, column=1, padx=8, pady=6, sticky="w")
 
-        make_label("Décalage sous-titres (ms)", 8, 0)
-        tk.Entry(form, textvariable=subtitle_offset_ms_var, width=12, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=8, column=1, padx=8, pady=6, sticky="w")
+        make_label("Décalage sous-titres (ms)", 9, 0)
+        tk.Entry(form, textvariable=subtitle_offset_ms_var, width=12, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=9, column=1, padx=8, pady=6, sticky="w")
 
         master_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
@@ -1036,7 +1318,9 @@ def _ask_user_inputs(
             fg=colors["ink"],
             selectcolor=colors["sun_soft"],
             activebackground=colors["panel_alt"],
-        ).grid(row=9, column=1, padx=8, pady=6, sticky="w")
+        ).grid(row=10, column=1, padx=8, pady=6, sticky="w")
+        refresh_subtitle_preset_menu()
+        load_subtitle_preset(subtitle_preset_var.get().strip())
 
         editor_wrap = tk.Frame(batch_tab, bg=colors["sky"])
         editor_wrap.grid(row=1, column=0, columnspan=3, padx=0, pady=8, sticky="nw")
@@ -1614,6 +1898,7 @@ def _ask_user_inputs(
                 "render_preset": render_var.get().strip() or "H264_Shorts_1080x1920_60fps",
                 "profile": profile_var.get().strip() or "valo",
                 "preset_id": preset_var.get().strip() or state["preset_id"],
+                "subtitle_preset_id": subtitle_preset_var.get().strip() or state["subtitle_preset_id"],
                 "query": query_var.get().strip(),
                 "use_transcript_for_selection": bool(transcript_select_var.get()),
                 "render_master": bool(master_var.get()),
@@ -1798,6 +2083,10 @@ def _ask_user_inputs(
 
             def _worker_single_sub() -> None:
                 try:
+                    root_dir = _repo_root()
+                    root_str = str(root_dir)
+                    if root_str not in sys.path:
+                        sys.path.insert(0, root_str)
                     from short_editor.subtitles import generate_srt_for_clip
                     from short_editor.transcription import ensure_transcript
 
@@ -1813,9 +2102,10 @@ def _ask_user_inputs(
                     timeline_name = str(ctx["timeline_name"])
                     item_name = str(ctx["item_name"])
 
-                    cfg = _load_pipeline_config(_repo_root())
-                    transcript_path = ensure_transcript(source_path, cfg, _repo_root() / "output" / "transcripts")
-                    subtitle_dir = _repo_root() / "output" / "subtitles" / "manual"
+                    subtitle_preset = selected_subtitle_preset()
+                    cfg = _merge_subtitle_preset_into_config(_load_pipeline_config(root_dir), subtitle_preset)
+                    transcript_path = ensure_transcript(source_path, cfg, root_dir / "output" / "transcripts")
+                    subtitle_dir = root_dir / "output" / "subtitles" / "manual"
                     out_name = _safe_name_token(item_name or timeline_name, limit=120)
                     out_srt = subtitle_dir / f"{out_name}.srt"
                     ok_srt = generate_srt_for_clip(transcript_path, clip_start, clip_end, out_srt, cfg.get("captions", {}))
@@ -1834,6 +2124,9 @@ def _ask_user_inputs(
                         subtitle_path=out_srt,
                         template_name=str(subtitle_template_var.get().strip() or SUBTITLE_TEMPLATE_AUTO_LABEL),
                         offset_ms=offset_ms_value,
+                        subtitle_style=_subtitle_style_from_preset(subtitle_preset),
+                        timing_segments=list(ctx.get("subtitle_timing_segments", []) or []),
+                        subtitle_source_start=float(ctx.get("subtitle_source_start", clip_start)),
                     )
                     if not ok_import:
                         result_box["result"] = {
@@ -2062,6 +2355,113 @@ def _ask_user_inputs(
             if result.get("ok"):
                 play_notification_sound()
 
+        def undo_silence_cuts_now() -> None:
+            scope = silence_scope_var.get().strip() or "Clip sélectionné"
+            set_status(f"Annulation des cuts de silences: {scope}...", warnings=[])
+
+            pm = _safe_call(resolve, "GetProjectManager")
+            project = _safe_call(pm, "GetCurrentProject") if pm else None
+            if not project:
+                set_status("Aucun projet Resolve ouvert.", warnings=[])
+                return
+            media_pool = _safe_call(project, "GetMediaPool")
+            if not media_pool:
+                set_status("Media Pool indisponible.", warnings=[])
+                return
+
+            warnings_out: list[str] = []
+            originals: list[str] = []
+            targets: list[str] = []
+
+            def _add_target(name: str, original: str = "") -> None:
+                clean_name = str(name or "").strip()
+                if not clean_name or clean_name in targets:
+                    return
+                targets.append(clean_name)
+                if original and original not in originals:
+                    originals.append(original)
+
+            if scope == "Clip sélectionné":
+                current_timeline = _safe_call(project, "GetCurrentTimeline")
+                current_name = str(_safe_call(current_timeline, "GetName", default="") or "") if current_timeline else ""
+                if current_name.endswith("__silence_cut"):
+                    _add_target(current_name, current_name[: -len("__silence_cut")])
+
+                ok_ctx, ctx_msg, ctx = _selected_clip_subtitle_context(resolve)
+                if ok_ctx:
+                    base_name = str(ctx.get("item_name") or ctx.get("timeline_name") or "").strip()
+                    if base_name:
+                        _add_target(_suffix_timeline_name(base_name), base_name)
+                elif not targets:
+                    set_status(ctx_msg, warnings=[])
+                    return
+            else:
+                manifest_value = session_ref.get("manifest") or default_manifest
+                if not manifest_value:
+                    set_status("Aucun manifest disponible. Génère d'abord un batch.", warnings=[])
+                    return
+                manifest_path = Path(manifest_value)
+                if not manifest_path.exists():
+                    set_status(f"Manifest introuvable: {manifest_path}", warnings=[])
+                    return
+                batch_id, plans = _parse_manifest(manifest_path)
+                if not plans:
+                    set_status("Aucun clip valide dans le manifest.", warnings=[])
+                    return
+                for plan in plans:
+                    base_name = plan.timeline_name or f"{batch_id}__{plan.display_name or plan.clip_id}"
+                    _add_target(_suffix_timeline_name(base_name), base_name)
+
+            existing_targets: list[tuple[str, Any]] = []
+            for timeline_name in targets:
+                timeline = _find_timeline_by_name(project, timeline_name)
+                if timeline:
+                    existing_targets.append((timeline_name, timeline))
+                else:
+                    warnings_out.append(f"Timeline silence_cut introuvable: {timeline_name}")
+
+            if not existing_targets:
+                set_status("Aucune timeline silence_cut à supprimer.", warnings=warnings_out)
+                return
+
+            try:
+                confirmed = messagebox.askyesno(
+                    "Annuler les cuts de silences",
+                    f"Supprimer {len(existing_targets)} timeline(s) __silence_cut ?\n\n"
+                    "Les timelines originales ne seront pas modifiées.",
+                    parent=root,
+                )
+            except Exception:
+                confirmed = True
+            if not confirmed:
+                set_status("Annulation des cuts de silences annulée.", warnings=[])
+                return
+
+            deleted = 0
+            for timeline_name, timeline in existing_targets:
+                ok = _safe_call(media_pool, "DeleteTimelines", [timeline], default=False)
+                if not ok:
+                    ok = _safe_call(project, "DeleteTimeline", timeline, default=False)
+                if ok:
+                    deleted += 1
+                    _log(f"silence_cut_deleted name={timeline_name}")
+                else:
+                    warnings_out.append(f"Suppression impossible: {timeline_name}")
+
+            for original_name in originals:
+                original_timeline = _find_timeline_by_name(project, original_name)
+                if original_timeline:
+                    _safe_call(project, "SetCurrentTimeline", original_timeline)
+                    _safe_call(media_pool, "SetCurrentTimeline", original_timeline)
+                    break
+
+            if deleted <= 0:
+                set_status("Aucune timeline silence_cut supprimée.", warnings=warnings_out)
+                return
+            msg = f"Cuts annulés: {deleted} timeline(s) silence_cut supprimée(s)."
+            set_status(msg, warnings=warnings_out)
+            play_notification_sound()
+
         batch_footer = tk.Frame(batch_tab, bg=colors["sky"], bd=0)
         batch_footer.grid(row=2, column=0, columnspan=3, sticky="e", padx=10, pady=(2, 12))
         ui_button(batch_footer, "Générer + sous-titres auto (Qualité)", run_now_quality, primary=True).pack(side="right", padx=6)
@@ -2089,7 +2489,7 @@ def _ask_user_inputs(
             fg=colors["ink"],
             font=("Segoe UI", 9, "bold"),
             anchor="w",
-        ).grid(row=0, column=0, columnspan=3, sticky="we", padx=4, pady=(0, 6))
+        ).grid(row=0, column=0, columnspan=4, sticky="we", padx=4, pady=(0, 6))
         tk.Radiobutton(
             silence_panel,
             text="Clip sélectionné",
@@ -2111,7 +2511,9 @@ def _ask_user_inputs(
             activebackground=colors["panel"],
         ).grid(row=1, column=1, sticky="w", padx=4, pady=4)
         ui_button(silence_panel, "Couper les silences", cut_silences_now, primary=True).grid(row=1, column=2, sticky="e", padx=4, pady=4)
+        ui_button(silence_panel, "Annuler les cuts", undo_silence_cuts_now, primary=False).grid(row=1, column=3, sticky="e", padx=4, pady=4)
         silence_panel.columnconfigure(2, weight=1)
+        silence_panel.columnconfigure(3, weight=1)
 
         action_preset_panel = tk.LabelFrame(actions_panel, text="✦ Appliquer le preset ✦", bg=colors["panel"], fg=colors["ink"], bd=4, relief="ridge", padx=8, pady=8, font=("Verdana", 9, "bold"))
         action_preset_panel.grid(row=3, column=0, columnspan=3, sticky="we", padx=6, pady=(10, 6))
@@ -2292,6 +2694,21 @@ def _overlap_ratio_from_ranges(a_start: float, a_end: float, b_start: float, b_e
     return inter / shortest
 
 
+def _ranges_too_close(
+    a_start: float,
+    a_end: float,
+    b_start: float,
+    b_end: float,
+    overlap_threshold: float = 0.35,
+    min_center_distance_seconds: float = 60.0,
+) -> bool:
+    if _overlap_ratio_from_ranges(a_start, a_end, b_start, b_end) > overlap_threshold:
+        return True
+    a_center = a_start + ((a_end - a_start) / 2.0)
+    b_center = b_start + ((b_end - b_start) / 2.0)
+    return abs(a_center - b_center) < min_center_distance_seconds
+
+
 def _assign_simple_display_names_dict(clips: list[dict[str, Any]]) -> None:
     chapter_idx = 1
     auto_idx = 1
@@ -2327,11 +2744,11 @@ def _select_non_overlapping_fallback(existing: list[dict[str, float]], candidate
         c_start = float(c["start_seconds"])
         c_end = float(c["end_seconds"])
         too_close = any(
-            _overlap_ratio_from_ranges(c_start, c_end, float(e["start_seconds"]), float(e["end_seconds"])) > 0.4
+            _ranges_too_close(c_start, c_end, float(e["start_seconds"]), float(e["end_seconds"]))
             for e in existing
         )
         too_close = too_close or any(
-            _overlap_ratio_from_ranges(c_start, c_end, float(s["start_seconds"]), float(s["end_seconds"])) > 0.4
+            _ranges_too_close(c_start, c_end, float(s["start_seconds"]), float(s["end_seconds"]))
             for s in selected
         )
         if too_close:
@@ -2340,6 +2757,44 @@ def _select_non_overlapping_fallback(existing: list[dict[str, float]], candidate
         if len(selected) >= needed:
             break
     return selected
+
+
+def _dedupe_fallback_clip_dicts(clips: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    kept: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for clip in clips:
+        seed_type = str(clip.get("seed_type", ""))
+        if seed_type == "chapter":
+            kept.append(clip)
+            continue
+
+        try:
+            start = float(clip.get("start_seconds", 0.0))
+            end = float(clip.get("end_seconds", 0.0))
+        except Exception:
+            kept.append(clip)
+            continue
+
+        duplicate_of = None
+        for existing in kept:
+            if str(existing.get("source_path", "")) != str(clip.get("source_path", "")):
+                continue
+            try:
+                ex_start = float(existing.get("start_seconds", 0.0))
+                ex_end = float(existing.get("end_seconds", 0.0))
+            except Exception:
+                continue
+            if _ranges_too_close(start, end, ex_start, ex_end):
+                duplicate_of = existing
+                break
+
+        if duplicate_of is not None:
+            name = str(clip.get("clip_id") or clip.get("display_name") or "fallback")
+            kept_name = str(duplicate_of.get("clip_id") or duplicate_of.get("display_name") or "clip")
+            warnings.append(f"{name}: skipped fallback too close to {kept_name}")
+            continue
+        kept.append(clip)
+    return kept, warnings
 
 
 def _auto_detect_vod_path(resolve: Any, root: Path) -> Path | None:
@@ -2353,8 +2808,7 @@ def _auto_detect_vod_path(resolve: Any, root: Path) -> Path | None:
     if timeline:
         item = _safe_call(timeline, "GetCurrentVideoItem")
         if item:
-            props = _safe_call(item, "GetClipProperty", default={}) or {}
-            fp = str(props.get("File Path") or "")
+            fp = _source_path_from_resolve_clip(item)
             if fp and Path(fp).exists():
                 _log(f"Auto VOD detect: current timeline clip {fp}")
                 return Path(fp)
@@ -2439,6 +2893,8 @@ def _generate_manifest_for_vod(
     use_transcript_for_selection: bool = False,
     progress_cb: Any | None = None,
     preset_id: str = "",
+    subtitle_preset_id: str = "",
+    subtitle_preset: dict[str, Any] | None = None,
 ) -> Path:
     # Resolve scripts run from external script folders; ensure project root is importable.
     root_str = str(root)
@@ -2457,7 +2913,7 @@ def _generate_manifest_for_vod(
     from short_editor.subtitles import generate_srt_for_clip
     from short_editor.transcription import ensure_transcript
 
-    cfg = _load_pipeline_config(root)
+    cfg = _merge_subtitle_preset_into_config(_load_pipeline_config(root), subtitle_preset)
     manifest = probe_vod(vod_path)
     if callable(progress_cb):
         progress_cb("Batch+Subtitles", 5, 100, "Analyse du VOD")
@@ -2520,6 +2976,9 @@ def _generate_manifest_for_vod(
         clip_objs[i]["end_seconds"] = tc.end_seconds
         clip_objs[i]["reason"] = tc.reason
     manifest_warnings.extend(trim_warnings)
+
+    clip_objs, proximity_warnings = _dedupe_fallback_clip_dicts(clip_objs)
+    manifest_warnings.extend(proximity_warnings)
 
     _assign_simple_display_names_dict(clip_objs)
     _assign_timeline_names_dict(clip_objs, batch_id)
@@ -2614,6 +3073,7 @@ def _generate_manifest_for_vod(
         "meta": {
             "source_vod_path": str(vod_path.resolve()),
             "preset_id": preset_id,
+            "subtitle_preset_id": subtitle_preset_id,
             "generated_with_subtitles": bool(captions_enabled),
             "use_transcript_for_selection": bool(use_transcript_for_selection),
             "transcript_path": str(transcript_path_cached),
@@ -2822,6 +3282,36 @@ def _find_media_pool_item_by_path(media_pool: Any, source_path: Path) -> Any | N
         except Exception:
             continue
     return None
+
+
+def _path_from_clip_properties(props: Any) -> str:
+    if not isinstance(props, dict):
+        return ""
+    for key in ("File Path", "Clip File Path", "Source Path", "Media Path", "Path", "Filename", "File Name"):
+        raw = str(props.get(key) or "").strip()
+        if not raw:
+            continue
+        candidate = Path(raw)
+        if candidate.exists():
+            return str(candidate)
+    return ""
+
+
+def _source_path_from_resolve_clip(obj: Any) -> str:
+    if not obj:
+        return ""
+
+    media_item = _safe_call(obj, "GetMediaPoolItem")
+    if media_item:
+        path = _path_from_clip_properties(_safe_call(media_item, "GetClipProperty", default={}) or {})
+        if path:
+            return path
+
+    path = _path_from_clip_properties(_safe_call(obj, "GetClipProperty", default={}) or {})
+    if path:
+        return path
+
+    return _path_from_clip_properties(_safe_call(obj, "GetProperty", default={}) or {})
 
 
 def _ensure_media_item(media_pool: Any, source_path: Path) -> Any | None:
@@ -3138,11 +3628,28 @@ def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, 
     project_fps = _fps_from_project(project)
     media_pool = _safe_call(project, "GetMediaPool")
 
+    def _to_int(v: Any) -> int | None:
+        try:
+            return int(float(v))
+        except Exception:
+            return None
+
     def _source_path_from_media_item(media_item: Any) -> str:
-        if not media_item:
-            return ""
-        props = _safe_call(media_item, "GetClipProperty", default={}) or {}
-        return str(props.get("File Path") or "").strip()
+        return _source_path_from_resolve_clip(media_item)
+
+    def _source_path_from_selected_media() -> str:
+        selected_media = _safe_call(media_pool, "GetSelectedClips", default=[]) if media_pool else []
+        selected_first = selected_media[0] if selected_media else None
+        return _source_path_from_media_item(selected_first)
+
+    def _log_unreadable_source(item_obj: Any) -> None:
+        name = str(_safe_call(item_obj, "GetName", default="") or "") if item_obj else ""
+        props = _safe_call(item_obj, "GetProperty", default={}) or {} if item_obj else {}
+        media_item = _safe_call(item_obj, "GetMediaPoolItem") if item_obj else None
+        media_props = _safe_call(media_item, "GetClipProperty", default={}) or {} if media_item else {}
+        prop_keys = ",".join(sorted(str(k) for k in props.keys())) if isinstance(props, dict) else ""
+        media_keys = ",".join(sorted(str(k) for k in media_props.keys())) if isinstance(media_props, dict) else ""
+        _log(f"selected_clip_source_unreadable item={name} item_keys={prop_keys} media_keys={media_keys}")
 
     def _item_from_playhead_or_current() -> Any | None:
         current = _safe_call(timeline, "GetCurrentVideoItem")
@@ -3157,15 +3664,110 @@ def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, 
                 return it
         return None
 
+    def _source_frame_range_from_item(item_obj: Any, record_start: int, record_end: int, source_fps: float) -> tuple[int, int] | None:
+        src_in = None
+        src_out = None
+        for meth in ("GetSourceStartFrame", "GetLeftOffset"):
+            val = _to_int(_safe_call(item_obj, meth, default=None))
+            if val is not None:
+                src_in = val
+                break
+        for meth in ("GetSourceEndFrame", "GetRightOffset"):
+            val = _to_int(_safe_call(item_obj, meth, default=None))
+            if val is not None:
+                src_out = val
+                break
+        if src_in is None or src_out is None:
+            all_props = _safe_call(item_obj, "GetProperty", default={}) or {}
+            if src_in is None:
+                src_in = _to_int(all_props.get("Source Start"))
+            if src_out is None:
+                src_out = _to_int(all_props.get("Source End"))
+        if src_in is None:
+            return None
+        if src_out is None or src_out <= src_in:
+            duration_source_frames = max(1, int(round(max(1, record_end - record_start) * (source_fps / max(1.0, float(project_fps))))))
+            src_out = src_in + duration_source_frames
+        if src_out <= src_in:
+            return None
+        return src_in, src_out
+
+    def _silence_cut_timeline_context() -> dict[str, Any] | None:
+        timeline_name = str(_safe_call(timeline, "GetName", default="timeline") or "timeline")
+        if not timeline_name.endswith("__silence_cut"):
+            return None
+        items = _get_timeline_items_on_track(timeline, 1)
+        if not items:
+            return None
+
+        timeline_start_frame = _to_int(_safe_call(timeline, "GetStartFrame", default=0)) or 0
+        source_path = ""
+        source_fps = float(project_fps)
+        segments: list[dict[str, float]] = []
+        for item_obj in sorted(items, key=lambda it: _to_int(_safe_call(it, "GetStart", default=0)) or 0):
+            record_start = _to_int(_safe_call(item_obj, "GetStart", default=None))
+            record_end = _to_int(_safe_call(item_obj, "GetEnd", default=None))
+            if record_start is None or record_end is None or record_end <= record_start:
+                continue
+            item_source = _source_path_from_resolve_clip(item_obj)
+            if not item_source:
+                continue
+            if source_path and str(Path(item_source).resolve()).lower() != str(Path(source_path).resolve()).lower():
+                continue
+            if not source_path:
+                source_path = item_source
+                media_item = _safe_call(item_obj, "GetMediaPoolItem")
+                source_fps = _source_fps_for_media_item(media_item, Path(source_path), project_fps) if media_item else float(project_fps)
+            frame_range = _source_frame_range_from_item(item_obj, record_start, record_end, source_fps)
+            if frame_range is None:
+                continue
+            src_in, src_out = frame_range
+            timeline_start_s = max(0.0, float(record_start - timeline_start_frame) / max(1.0, float(project_fps)))
+            segments.append(
+                {
+                    "source_start": max(0.0, float(src_in) / max(1.0, source_fps)),
+                    "source_end": max(0.0, float(src_out) / max(1.0, source_fps)),
+                    "timeline_start": timeline_start_s,
+                }
+            )
+
+        if not source_path or not segments:
+            _log(f"subtitle_silence_cut_segments_failed timeline={timeline_name} items={len(items)}")
+            return None
+        segments = [s for s in segments if float(s["source_end"]) > float(s["source_start"])]
+        if not segments:
+            return None
+        clip_start = min(float(s["source_start"]) for s in segments)
+        clip_end = max(float(s["source_end"]) for s in segments)
+        _log(f"subtitle_silence_cut_segments={len(segments)} timeline={timeline_name} source={source_path}")
+        return {
+            "project": project,
+            "timeline": timeline,
+            "media_pool": media_pool,
+            "source_path": source_path,
+            "clip_start": clip_start,
+            "clip_end": clip_end,
+            "timeline_name": timeline_name,
+            "item_name": timeline_name,
+            "subtitle_timing_segments": segments,
+            "subtitle_source_start": clip_start,
+        }
+
+    silence_ctx = _silence_cut_timeline_context()
+    if silence_ctx is not None:
+        return True, "ok", silence_ctx
+
     item = _item_from_playhead_or_current()
     source_path = ""
     fallback_range: tuple[int, int] | None = None
 
     if item is not None:
-        media_item = _safe_call(item, "GetMediaPoolItem")
-        source_path = _source_path_from_media_item(media_item)
+        source_path = _source_path_from_resolve_clip(item)
         if not source_path:
-            return False, "Selected timeline clip has no readable source path", {}
+            source_path = _source_path_from_selected_media()
+        if not source_path:
+            _log_unreadable_source(item)
+            return False, "Selected timeline clip has no readable source path. Select the source clip in Media Pool, or place the playhead on a plain video clip.", {}
     else:
         selected_media = _safe_call(media_pool, "GetSelectedClips", default=[]) if media_pool else []
         selected_first = selected_media[0] if selected_media else None
@@ -3177,12 +3779,6 @@ def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, 
         fallback_range = _get_timeline_selected_range(timeline)
         if fallback_range is None:
             return False, "No clip at playhead. Select timeline In/Out range to use selected Media Pool clip", {}
-
-    def _to_int(v: Any) -> int | None:
-        try:
-            return int(float(v))
-        except Exception:
-            return None
 
     src_in = None
     src_out = None
@@ -3799,6 +4395,9 @@ def _import_subtitles_to_timeline(
     subtitle_path: Path,
     template_name: str = SUBTITLE_TEMPLATE_AUTO_LABEL,
     offset_ms: int = -500,
+    subtitle_style: dict[str, Any] | None = None,
+    timing_segments: list[dict[str, Any]] | None = None,
+    subtitle_source_start: float = 0.0,
 ) -> tuple[bool, str]:
     if not subtitle_path.exists():
         return False, f"Subtitle file missing: {subtitle_path}"
@@ -3920,17 +4519,68 @@ def _import_subtitles_to_timeline(
             segs.append({"start": start, "end": end, "text": caption})
         return segs
 
-    def _set_textplus_item_text(timeline_item: Any, text_value: str) -> bool:
+    def _parse_hex_color(value: str) -> tuple[float, float, float] | None:
+        raw = str(value or "").strip()
+        if raw.startswith("#"):
+            raw = raw[1:]
+        if len(raw) != 6 or not re.fullmatch(r"[0-9a-fA-F]{6}", raw):
+            return None
+        return (int(raw[0:2], 16) / 255.0, int(raw[2:4], 16) / 255.0, int(raw[4:6], 16) / 255.0)
+
+    def _set_tool_input_any(tool: Any, names: list[str], value: Any) -> bool:
+        for name in names:
+            if bool(_safe_call(tool, "SetInput", name, value, default=False)):
+                return True
+        return False
+
+    def _apply_textplus_style(tool: Any, style: dict[str, Any]) -> int:
+        applied = 0
+        font = str(style.get("font", "")).strip()
+        font_style = str(style.get("font_style", "")).strip()
+        font_size = style.get("font_size")
+        color = _parse_hex_color(str(style.get("color", "")))
+        pos_x = style.get("position_x")
+        pos_y = style.get("position_y")
+        if font and _set_tool_input_any(tool, ["Font"], font):
+            applied += 1
+        if font_style and _set_tool_input_any(tool, ["Style", "FontStyle"], font_style):
+            applied += 1
+        if font_size is not None and _set_tool_input_any(tool, ["Size"], _coerce_float(font_size, 0.085, 0.01, 0.5)):
+            applied += 1
+        if color is not None:
+            r, g, b = color
+            color_applied = 0
+            if _set_tool_input_any(tool, ["Red1", "Red"], r):
+                color_applied += 1
+            if _set_tool_input_any(tool, ["Green1", "Green"], g):
+                color_applied += 1
+            if _set_tool_input_any(tool, ["Blue1", "Blue"], b):
+                color_applied += 1
+            if _set_tool_input_any(tool, ["Alpha1", "Alpha"], 1.0):
+                color_applied += 1
+            if color_applied <= 0 and _set_tool_input_any(tool, ["Color", "TextColor"], {1: r, 2: g, 3: b, 4: 1.0}):
+                color_applied += 1
+            applied += color_applied
+        if pos_x is not None and pos_y is not None:
+            x = _coerce_float(pos_x, 0.5, 0.0, 1.0)
+            y = _coerce_float(pos_y, 0.82, 0.0, 1.0)
+            if _set_tool_input_any(tool, ["Center", "Position"], {1: x, 2: y}):
+                applied += 1
+            elif _set_tool_input_any(tool, ["Center", "Position"], [x, y]):
+                applied += 1
+        return applied
+
+    def _set_textplus_item_text(timeline_item: Any, text_value: str) -> tuple[bool, int]:
         comp_count = _safe_call(timeline_item, "GetFusionCompCount", default=0) or 0
         try:
             count_i = int(comp_count)
         except Exception:
             count_i = 0
         if count_i <= 0:
-            return False
+            return False, 0
         comp = _safe_call(timeline_item, "GetFusionCompByIndex", 1, default=None)
         if comp is None:
-            return False
+            return False, 0
         tools = _safe_call(comp, "GetToolList", False, "TextPlus", default=None)
         if not isinstance(tools, dict) or not tools:
             tools = _safe_call(comp, "GetToolList", default={}) or {}
@@ -3938,8 +4588,9 @@ def _import_subtitles_to_timeline(
             ok = bool(_safe_call(tool, "SetInput", "StyledText", text_value, default=False))
             ok = ok or bool(_safe_call(tool, "SetInput", "Text", text_value, default=False))
             if ok:
-                return True
-        return False
+                style_count = _apply_textplus_style(tool, subtitle_style or {}) if subtitle_style else 0
+                return True, style_count
+        return False, 0
 
     segments = _parse_srt_segments(subtitle_path)
     if not segments:
@@ -3966,7 +4617,39 @@ def _import_subtitles_to_timeline(
     clip_list: list[dict[str, Any]] = []
     time_offset = float(offset_ms) / 1000.0
     _log(f"subtitle_textplus_offset_applied_ms={offset_ms}")
+
+    def _timeline_ranges_for_subtitle(seg: dict[str, Any]) -> list[tuple[float, float]]:
+        if not timing_segments:
+            return [(float(seg["start"]), float(seg["end"]))]
+        source_start = float(subtitle_source_start) + float(seg["start"])
+        source_end = float(subtitle_source_start) + float(seg["end"])
+        out: list[tuple[float, float]] = []
+        for timing in timing_segments:
+            try:
+                ts = float(timing.get("source_start", 0.0))
+                te = float(timing.get("source_end", ts))
+                record = float(timing.get("timeline_start", 0.0))
+            except Exception:
+                continue
+            left = max(source_start, ts)
+            right = min(source_end, te)
+            if right <= left:
+                continue
+            out.append((record + (left - ts), record + (right - ts)))
+        return out
+
+    text_segments: list[dict[str, Any]] = []
     for seg in segments:
+        for start_s, end_s in _timeline_ranges_for_subtitle(seg):
+            if end_s <= start_s:
+                continue
+            text_segments.append({"start": start_s, "end": end_s, "text": str(seg.get("text", ""))})
+    if timing_segments:
+        _log(f"subtitle_textplus_timing_remap segments={len(timing_segments)} captions={len(segments)} placed={len(text_segments)}")
+    if not text_segments:
+        return False, "No subtitle segments matched the cut timeline"
+
+    for seg in text_segments:
         shifted_start = max(0.0, float(seg["start"]) + time_offset)
         shifted_end = max(shifted_start + 0.05, float(seg["end"]) + time_offset)
         seg_start = int(round(shifted_start * fps))
@@ -3988,22 +4671,27 @@ def _import_subtitles_to_timeline(
         return False, "Failed to append standalone Text+ subtitle clips to timeline"
 
     applied = 0
+    style_applied = 0
     for i, it in enumerate(appended):
-        txt = str(segments[i].get("text", "")) if i < len(segments) else ""
-        if txt and _set_textplus_item_text(it, txt):
+        txt = str(text_segments[i].get("text", "")) if i < len(text_segments) else ""
+        ok_text, style_count = _set_textplus_item_text(it, txt) if txt else (False, 0)
+        if ok_text:
             applied += 1
+            if style_count > 0:
+                style_applied += 1
 
     after_count = _count_subtitle_items()
     after_video = _count_video_items()
     _log(
         f"subtitle_textplus_apply template={STANDALONE_CAPTION_TEMPLATE_NAME} status={template_status} "
-        f"applied={applied}/{len(segments)} subtitle_tracks_before={before_count} subtitle_tracks_after={after_count} "
+        f"applied={applied}/{len(text_segments)} style_applied={style_applied}/{applied} subtitle_tracks_before={before_count} subtitle_tracks_after={after_count} "
         f"video_items_before={before_video_count} video_items_after={after_video}"
     )
 
     if applied <= 0:
         return False, "Text+ clips appended but text injection failed"
-    return True, f"Subtitles applied via standalone Text+ ({applied}/{len(segments)})"
+    suffix = f", style {style_applied}/{applied}" if subtitle_style else ""
+    return True, f"Subtitles applied via standalone Text+ ({applied}/{len(text_segments)}{suffix})"
 
 
 def _plan_key(plan: ClipPlan) -> str:
@@ -4035,6 +4723,7 @@ def _build_from_manifest(
     require_subtitles: bool = False,
     subtitle_template_name: str = SUBTITLE_TEMPLATE_AUTO_LABEL,
     subtitle_offset_ms: int = -500,
+    subtitle_style: dict[str, Any] | None = None,
     progress_cb: Any | None = None,
 ) -> tuple[str, dict[str, ClipPlan], list[Any], list[str]]:
     batch_id, plans = _parse_manifest(manifest_path)
@@ -4177,6 +4866,7 @@ def _build_from_manifest(
                     sub_path,
                     template_name=subtitle_template_name,
                     offset_ms=subtitle_offset_ms,
+                    subtitle_style=subtitle_style,
                 )
                 if ok_sub:
                     subtitle_imported += 1
@@ -4730,6 +5420,7 @@ def run() -> int:
         preset_name = str(params["render_preset"])
         render_master = bool(params["render_master"])
         preset_id = str(params["preset_id"])
+        subtitle_preset_id = str(params.get("subtitle_preset_id", DEFAULT_SUBTITLE_PRESET_ID) or DEFAULT_SUBTITLE_PRESET_ID)
         transcript_query = str(params["query"])
         use_transcript_for_selection = bool(params.get("use_transcript_for_selection", False))
         strict_manifest = bool(params.get("strict_manifest", False))
@@ -4749,6 +5440,11 @@ def run() -> int:
         selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_id, {}))
         if not selected_preset:
             return {"message": f"Preset introuvable: {preset_id}", "warnings": []}
+        selected_subtitle_preset = dict((presets_data.get("subtitle_presets", {}) or {}).get(subtitle_preset_id, {}))
+        if not selected_subtitle_preset:
+            selected_subtitle_preset = dict(_default_subtitle_presets()[DEFAULT_SUBTITLE_PRESET_ID])
+            subtitle_preset_id = DEFAULT_SUBTITLE_PRESET_ID
+        subtitle_style = _subtitle_style_from_preset(selected_subtitle_preset)
 
         if strict_manifest and bool(session.get("used_manifest_fallback", False)):
             fallback_msg = "Sous-titres auto annulés: la génération du manifest a échoué au démarrage et un manifest de secours est utilisé. Relance le script pour régénérer un manifest frais."
@@ -4756,7 +5452,9 @@ def run() -> int:
             return {"message": fallback_msg, "warnings": [fallback_msg]}
 
         if require_subtitles:
-            current_has_valid_subtitles = bool(manifest_data and _manifest_has_valid_subtitles(root, manifest_data))
+            current_meta = manifest_data.get("meta", {}) if isinstance(manifest_data, dict) and isinstance(manifest_data.get("meta", {}), dict) else {}
+            current_subtitle_preset_matches = str(current_meta.get("subtitle_preset_id", "")).strip() == subtitle_preset_id
+            current_has_valid_subtitles = bool(manifest_data and current_subtitle_preset_matches and _manifest_has_valid_subtitles(root, manifest_data))
             if detected_vod is None or not Path(detected_vod).exists():
                 return {"message": "Les sous-titres auto nécessitent une source VOD détectée. Sélectionne un clip dans Resolve puis relance.", "warnings": []}
             if preview_safe_quality:
@@ -4789,6 +5487,7 @@ def run() -> int:
                     detected_vod_path,
                     preset_id,
                     use_transcript_for_selection,
+                    subtitle_preset_id,
                 )
                 if reusable_manifest is not None:
                     manifest_path = reusable_manifest
@@ -4811,6 +5510,8 @@ def run() -> int:
                         use_transcript_for_selection=use_transcript_for_selection,
                         progress_cb=progress_cb,
                         preset_id=preset_id,
+                        subtitle_preset_id=subtitle_preset_id,
+                        subtitle_preset=selected_subtitle_preset,
                     )
                     session["manifest"] = manifest_path
                     session["used_manifest_fallback"] = False
@@ -4857,6 +5558,7 @@ def run() -> int:
             require_subtitles=require_subtitles,
             subtitle_template_name=subtitle_template_name,
             subtitle_offset_ms=subtitle_offset_ms,
+            subtitle_style=subtitle_style,
             progress_cb=progress_cb,
         )
 
@@ -4899,6 +5601,7 @@ def run() -> int:
         output_dir = Path(params["output"])
         preset_name = str(params["render_preset"])
         preset_id = str(params["preset_id"])
+        subtitle_preset_id = str(params.get("subtitle_preset_id", DEFAULT_SUBTITLE_PRESET_ID) or DEFAULT_SUBTITLE_PRESET_ID)
         transcript_query = str(params["query"])
         use_transcript_for_selection = bool(params.get("use_transcript_for_selection", False))
         subtitle_template_name = str(params.get("subtitle_template_name", SUBTITLE_TEMPLATE_AUTO_LABEL) or SUBTITLE_TEMPLATE_AUTO_LABEL)
@@ -4913,6 +5616,8 @@ def run() -> int:
         selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_id, {}))
         if not selected_preset:
             return {"message": f"Preset introuvable: {preset_id}", "warnings": []}
+        selected_subtitle_preset = dict((presets_data.get("subtitle_presets", {}) or {}).get(subtitle_preset_id, {}))
+        subtitle_style = _subtitle_style_from_preset(selected_subtitle_preset)
 
         if use_transcript_for_selection:
             if detected_vod is None or not Path(detected_vod).exists():
@@ -4924,6 +5629,9 @@ def run() -> int:
                     generate_subtitles=False,
                     use_transcript_for_selection=True,
                     progress_cb=progress_cb,
+                    preset_id=preset_id,
+                    subtitle_preset_id=subtitle_preset_id,
+                    subtitle_preset=selected_subtitle_preset,
                 )
                 session["manifest"] = manifest_path
                 session["used_manifest_fallback"] = False
@@ -4950,6 +5658,7 @@ def run() -> int:
             require_subtitles=False,
             subtitle_template_name=subtitle_template_name,
             subtitle_offset_ms=subtitle_offset_ms,
+            subtitle_style=subtitle_style,
             progress_cb=progress_cb,
         )
         session["batch_id"] = batch_id

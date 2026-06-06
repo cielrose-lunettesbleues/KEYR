@@ -4,17 +4,48 @@
     "valo": {
       "label": "Valo",
       "active_preset": "Just chatting",
+      "active_subtitle_preset": "Minimal clean",
       "max_transcript_clip_seconds": 45
     },
     "jeu": {
       "label": "Jeu",
       "active_preset": "Just chatting",
+      "active_subtitle_preset": "Minimal clean",
       "max_transcript_clip_seconds": 45
     },
     "react": {
       "label": "React",
       "active_preset": "Just chatting",
+      "active_subtitle_preset": "Minimal clean",
       "max_transcript_clip_seconds": 45
+    }
+  },
+  "subtitle_presets": {
+    "Minimal clean": {
+      "name": "Minimal clean",
+      "font": "Arial",
+      "font_style": "Bold",
+      "font_size": 0.085,
+      "color": "#FFFFFF",
+      "position_x": 0.5,
+      "position_y": 0.82,
+      "words_per_subtitle": 3,
+      "max_chars_per_line": 24,
+      "subtitle_template_name": "Auto-detect (Recommended)",
+      "subtitle_offset_ms": -500
+    },
+    "Punchy jaune": {
+      "name": "Punchy jaune",
+      "font": "Arial",
+      "font_style": "Bold",
+      "font_size": 0.095,
+      "color": "#FFF04A",
+      "position_x": 0.5,
+      "position_y": 0.78,
+      "words_per_subtitle": 2,
+      "max_chars_per_line": 20,
+      "subtitle_template_name": "Auto-detect (Recommended)",
+      "subtitle_offset_ms": -500
     }
   },
   "presets": {

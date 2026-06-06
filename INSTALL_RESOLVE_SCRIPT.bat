@@ -5,12 +5,12 @@ cd /d "%~dp0"
 set "TARGET_DIR=%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility"
 if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 
-copy /Y "resolve_integration\run_shorts_batch_resolve.py" "%TARGET_DIR%\run_shorts_batch_resolve.py" >nul
-
 set "CFG_FILE=%TARGET_DIR%\short_editor_resolve_config.json"
 > "%CFG_FILE%" echo {
 >> "%CFG_FILE%" echo   "project_root": "%CD:\=\\%"
 >> "%CFG_FILE%" echo }
+
+copy /Y "resolve_integration\run_shorts_batch_resolve.py" "%TARGET_DIR%\run_shorts_batch_resolve.py" >nul
 
 echo Installed Resolve script to:
 echo %TARGET_DIR%\run_shorts_batch_resolve.py
