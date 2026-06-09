@@ -4,7 +4,7 @@
     "valo": {
       "label": "Valo",
       "active_preset": "Just chatting",
-      "active_subtitle_preset": "Minimal clean",
+      "active_subtitle_preset": "Punchy jaune",
       "max_transcript_clip_seconds": 45
     },
     "jeu": {
@@ -42,7 +42,7 @@
       "color": "#FFF04A",
       "position_x": 0.5,
       "position_y": 0.78,
-      "words_per_subtitle": 2,
+      "words_per_subtitle": 5,
       "max_chars_per_line": 20,
       "subtitle_template_name": "Auto-detect (Recommended)",
       "subtitle_offset_ms": -500

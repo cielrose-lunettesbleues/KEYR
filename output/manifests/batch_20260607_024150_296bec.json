@@ -1,0 +1,110 @@
+{
+  "batch_id": "batch_20260607_024150_296bec",
+  "source_vods": [
+    "E:\\2026-06-04 20-22-43.mp4"
+  ],
+  "clips": [
+    {
+      "clip_id": "2026-06-04 20-22-43__chapter_0001",
+      "display_name": "Chapitre 1",
+      "source_path": "E:\\2026-06-04 20-22-43.mp4",
+      "start_seconds": 1414.4,
+      "end_seconds": 1449.4,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "timeline_name": "batch_20260607_024150_296bec__Chapitre 1"
+    },
+    {
+      "clip_id": "2026-06-04 20-22-43__chapter_0002",
+      "display_name": "Chapitre 2",
+      "source_path": "E:\\2026-06-04 20-22-43.mp4",
+      "start_seconds": 4429.8,
+      "end_seconds": 4457.85,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker;trim=voice",
+      "overflow": false,
+      "timeline_name": "batch_20260607_024150_296bec__Chapitre 2"
+    },
+    {
+      "clip_id": "2026-06-04 20-22-43__chapter_0003",
+      "display_name": "Chapitre 3",
+      "source_path": "E:\\2026-06-04 20-22-43.mp4",
+      "start_seconds": 4801.4,
+      "end_seconds": 4836.4,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "timeline_name": "batch_20260607_024150_296bec__Chapitre 3"
+    },
+    {
+      "clip_id": "2026-06-04 20-22-43__fallback_0000",
+      "display_name": "Auto 1",
+      "source_path": "E:\\2026-06-04 20-22-43.mp4",
+      "start_seconds": 1134.48,
+      "end_seconds": 1174.48,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.834,
+      "reason": "No chapters found: audio peak + activity (hook=0.99; transcript_discovery;clivant=6;matched=but,c'est,coup,est)",
+      "overflow": false,
+      "timeline_name": "batch_20260607_024150_296bec__Auto 1"
+    },
+    {
+      "clip_id": "2026-06-04 20-22-43__fallback_0001",
+      "display_name": "Auto 2",
+      "source_path": "E:\\2026-06-04 20-22-43.mp4",
+      "start_seconds": 460.76,
+      "end_seconds": 500.76,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7925,
+      "reason": "No chapters found: audio peak + activity (hook=1.50; transcript_discovery;clivant=3;etonnant=3;matched=c'est,est,fait,j'ai)",
+      "overflow": false,
+      "timeline_name": "batch_20260607_024150_296bec__Auto 2"
+    },
+    {
+      "clip_id": "2026-06-04 20-22-43__fallback_0002",
+      "display_name": "Auto 3",
+      "source_path": "E:\\2026-06-04 20-22-43.mp4",
+      "start_seconds": 3375.17,
+      "end_seconds": 3415.17,
+      "mandatory": false,
+      "seed_type": "fallback_discovery",
+      "score": 0.7765,
+      "reason": "No chapters found: audio peak + activity (hook=1.50; transcript_discovery;clivant=1;matched=attend,bon,c'est,coup)",
+      "overflow": false,
+      "timeline_name": "batch_20260607_024150_296bec__Auto 3"
+    }
+  ],
+  "pipeline_version": "0.1.0",
+  "meta": {
+    "source_vod_path": "E:\\2026-06-04 20-22-43.mp4",
+    "preset_id": "Valorant Preset",
+    "subtitle_preset_id": "Punchy jaune",
+    "generated_with_subtitles": true,
+    "use_transcript_for_selection": false,
+    "transcript_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\transcripts\\2026-06-04 20-22-43.json",
+    "transcript_exists_pre_generation": true
+  },
+  "warnings": [
+    "2026-06-04 20-22-43.mp4: Skipped chapter 0 at 0.000s: auto_start_chapter_0",
+    "2026-06-04 20-22-43__chapter_0002: dead-air trim 4423.80-4458.80s -> 4429.80-4457.85s"
+  ],
+  "quota_summary": [
+    {
+      "vod": "2026-06-04 20-22-43.mp4",
+      "target_quota": 6,
+      "max_quota": 7,
+      "chapter_used": 3,
+      "fallback_added": 3,
+      "total_selected": 6
+    }
+  ]
+}

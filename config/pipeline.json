@@ -26,6 +26,7 @@
   "audio": {
     "profile_name": "balanced_gaming_feel",
     "always_muted_tracks": [
+      1,
       4
     ],
     "analysis": {

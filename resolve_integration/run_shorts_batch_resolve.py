@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import io
-import csv
 import re
 import sys
 import os
@@ -12,13 +11,76 @@ import threading
 import traceback
 import warnings
 import subprocess
-import tempfile
 from contextlib import redirect_stderr
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from datetime import datetime, timezone
-import importlib
+
+
+def _bootstrap_project_root_for_imports() -> None:
+    candidates: list[Path] = []
+    raw_file = globals().get("__file__")
+    if raw_file:
+        candidates.append(Path(str(raw_file)).resolve().with_name("short_editor_resolve_config.json"))
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        candidates.append(Path(appdata) / "Blackmagic Design" / "DaVinci Resolve" / "Support" / "Fusion" / "Scripts" / "Utility" / "short_editor_resolve_config.json")
+    for cfg_path in candidates:
+        try:
+            if not cfg_path.exists():
+                continue
+            with cfg_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            root = Path(str(data.get("project_root", ""))).resolve()
+            if root.exists() and str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+                return
+        except Exception:
+            continue
+
+
+_bootstrap_project_root_for_imports()
+
+from resolve_integration.resolve_app.api import load_resolve as _load_resolve_impl, safe_call as _safe_call
+from resolve_integration.resolve_app.batch_builder import BatchBuildDeps as _BatchBuildDeps
+from resolve_integration.resolve_app import batch_builder as _batch_builder
+from resolve_integration.resolve_app import clip_subtitles as _clip_subtitles
+from resolve_integration.resolve_app.logging import log as _log, log_path as _log_path
+from resolve_integration.resolve_app.paths import (
+    load_installed_config_root as _load_installed_config_root,
+    repo_root as _repo_root,
+    script_config_path as _script_config_path,
+    script_path as _script_path,
+)
+from resolve_integration.resolve_app import preset_actions as _preset_actions
+from resolve_integration.resolve_app import presets as _presets
+from resolve_integration.resolve_app import manifests as _manifests
+from resolve_integration.resolve_app import media_pool as _media_pool
+from resolve_integration.resolve_app import project_settings as _project_settings
+from resolve_integration.resolve_app import render_queue as _render_queue
+from resolve_integration.resolve_app import selected_clip as _selected_clip
+from resolve_integration.resolve_app import session_actions as _session_actions
+from resolve_integration.resolve_app import silence_actions as _silence_actions
+from resolve_integration.resolve_app import silence_cut as _silence_cut
+from resolve_integration.resolve_app import textplus as _textplus
+from resolve_integration.resolve_app import timeline_actions as _timeline_actions
+from resolve_integration.resolve_app import timelines as _timelines
+from resolve_integration.resolve_app import transforms as _transforms
+from resolve_integration.resolve_app import ui_feedback as _ui_feedback
+from resolve_integration.resolve_app import ui_keywords as _ui_keywords
+from resolve_integration.resolve_app import ui_main as _ui_main
+from resolve_integration.resolve_app import ui_presets as _ui_presets
+from resolve_integration.resolve_app import ui_progress as _ui_progress
+from resolve_integration.resolve_app import ui_status as _ui_status
+from resolve_integration.resolve_app.ui_loader import KirbyLoader as _KirbyLoader, load_gif_frames as _load_gif_frames_impl
+from resolve_integration.resolve_app.plans import (
+    ClipPlan,
+    parse_manifest as _parse_manifest_impl,
+    plan_key as _plan_key_impl,
+    safe_name_token as _safe_name_token_impl,
+    suffix_timeline_name as _suffix_timeline_name_impl,
+)
+from short_editor.selection import overlap_ratio_from_ranges, ranges_too_close, select_non_overlapping_dicts
+from short_editor.manifest_builder import generate_manifest_for_vod as _build_manifest_for_vod
 
 
 DEFAULT_FPS = 60
@@ -28,415 +90,51 @@ SUBTITLE_TEMPLATE_AUTO_LABEL = "Auto-detect (Recommended)"
 DEFAULT_SUBTITLE_PRESET_ID = "Minimal clean"
 
 def _load_resolve() -> Any:
-    # Strategy 1: direct module import (works on many installs)
-    try:
-        dvr_script = importlib.import_module("DaVinciResolveScript")
-        resolve = dvr_script.scriptapp("Resolve")
-        if resolve is not None:
-            _log("Resolve loader: DaVinciResolveScript import OK")
-            return resolve
-    except Exception as exc:
-        _log(f"Resolve loader strategy 1 failed: {exc}")
-
-    # Strategy 2: Resolve-injected bmd global
-    try:
-        bmd_obj = globals().get("bmd")
-        if bmd_obj is not None:
-            resolve = bmd_obj.scriptapp("Resolve")
-            if resolve is not None:
-                _log("Resolve loader: bmd.scriptapp OK")
-                return resolve
-    except Exception as exc:
-        _log(f"Resolve loader strategy 2 failed: {exc}")
-
-    # Strategy 3: extend sys.path to common Windows scripting locations
-    candidates = []
-    appdata = os.environ.get("APPDATA", "")
-    programdata = os.environ.get("PROGRAMDATA", "")
-    programfiles = os.environ.get("PROGRAMFILES", "")
-    if appdata:
-        candidates.append(
-            Path(appdata)
-            / "Blackmagic Design"
-            / "DaVinci Resolve"
-            / "Support"
-            / "Developer"
-            / "Scripting"
-            / "Modules"
-        )
-    if programdata:
-        candidates.append(
-            Path(programdata)
-            / "Blackmagic Design"
-            / "DaVinci Resolve"
-            / "Support"
-            / "Developer"
-            / "Scripting"
-            / "Modules"
-        )
-    if programfiles:
-        candidates.append(
-            Path(programfiles)
-            / "Blackmagic Design"
-            / "DaVinci Resolve"
-            / "Developer"
-            / "Scripting"
-            / "Modules"
-        )
-
-    for p in candidates:
-        try:
-            if p.exists():
-                if str(p) not in sys.path:
-                    sys.path.append(str(p))
-                dvr_script = importlib.import_module("DaVinciResolveScript")
-                resolve = dvr_script.scriptapp("Resolve")
-                if resolve is not None:
-                    _log(f"Resolve loader: imported via path {p}")
-                    return resolve
-        except Exception as exc:
-            _log(f"Resolve loader strategy 3 failed for {p}: {exc}")
-
-    raise RuntimeError(
-        "Could not load Resolve scripting API. In Resolve, enable Preferences > System > General > External Scripting = Local, then restart Resolve."
-    )
-
-
-def _safe_call(obj: Any, method_name: str, *args: Any, default: Any = None, required: bool = False) -> Any:
-    attr = getattr(obj, method_name, None)
-    _log(f"CALL {type(obj).__name__}.{method_name} callable={callable(attr)}")
-    if not callable(attr):
-        msg = f"Method not callable: {type(obj).__name__}.{method_name}"
-        _log(msg)
-        if required:
-            raise RuntimeError(msg)
-        return default
-    try:
-        out = attr(*args)
-        _log(f"OK {type(obj).__name__}.{method_name} -> {type(out).__name__}")
-        return out
-    except Exception as exc:
-        _log(f"ERR {type(obj).__name__}.{method_name}: {exc}")
-        if required:
-            raise
-        return default
-
-
-def _repo_root() -> Path:
-    configured = _load_installed_config_root()
-    if configured is not None:
-        return configured
-    script_path = _script_path()
-    if script_path is not None:
-        return script_path.parent.parent
-    return Path.cwd()
-
-
-def _log_path() -> Path:
-    return Path.home() / "Desktop" / "short_editor_resolve.log"
-
-
-def _log(message: str) -> None:
-    line = f"[{datetime.now().isoformat(timespec='seconds')}] {message}\n"
-    try:
-        with _log_path().open("a", encoding="utf-8") as f:
-            f.write(line)
-    except Exception:
-        pass
+    return _load_resolve_impl(globals().get("bmd"))
 
 
 def _presets_path(root: Path) -> Path:
-    return root / "config" / "resolve_presets.json"
+    return _presets.presets_path(root)
 
 
 def _default_presets() -> dict[str, Any]:
-    return {
-        "version": "1.0",
-        "profiles": {
-            "valo": {
-                "label": "Valo",
-                "active_preset": "Valorant Preset",
-                "active_subtitle_preset": DEFAULT_SUBTITLE_PRESET_ID,
-                "max_transcript_clip_seconds": 45,
-            },
-            "jeu": {
-                "label": "Jeu",
-                "active_preset": "Jeux",
-                "active_subtitle_preset": DEFAULT_SUBTITLE_PRESET_ID,
-                "max_transcript_clip_seconds": 45,
-            },
-            "react": {
-                "label": "React",
-                "active_preset": "Just chatting",
-                "active_subtitle_preset": DEFAULT_SUBTITLE_PRESET_ID,
-                "max_transcript_clip_seconds": 45,
-            },
-        },
-        "subtitle_presets": _default_subtitle_presets(),
-        "presets": {
-            "Valorant Preset": {
-                "name": "Valorant Preset",
-                "profile": "valo",
-                "mode": "fixed_split",
-                "layers_count": 2,
-                "safe_padding": 0.06,
-                "max_clip_seconds": 45,
-                "gameplay": {
-                    "zoom_x": 1.65,
-                    "zoom_y": 1.65,
-                    "pan": 0.0,
-                    "tilt": 0.62,
-                    "crop_top": 0.0,
-                    "crop_bottom": 0.42,
-                    "crop_left": 0.0,
-                    "crop_right": 0.0,
-                },
-                "camera": {
-                    "zoom_x": 3.2,
-                    "zoom_y": 3.2,
-                    "pan": 0.72,
-                    "tilt": -0.82,
-                    "crop_top": 0.0,
-                    "crop_bottom": 0.0,
-                    "crop_left": 0.0,
-                    "crop_right": 0.0,
-                },
-            },
-            "Jeux": {
-                "name": "Jeux",
-                "profile": "valo",
-                "mode": "fixed_split",
-                "safe_padding": 0.06,
-                "max_clip_seconds": 45,
-                "gameplay": {
-                    "zoom_x": 1.78,
-                    "zoom_y": 1.78,
-                    "pan": 117.72,
-                    "tilt": 1388.18,
-                    "crop_top": 0.0,
-                    "crop_bottom": 0.0,
-                    "crop_left": 0.0,
-                    "crop_right": 0.0,
-                },
-                "camera": {
-                    "zoom_x": 3.74,
-                    "zoom_y": 3.74,
-                    "pan": -1460.0,
-                    "tilt": 448.62,
-                    "crop_top": 0.0,
-                    "crop_bottom": 0.42,
-                    "crop_left": 0.0,
-                    "crop_right": 0.0,
-                },
-            },
-            "Just chatting": {
-                "name": "Just chatting",
-                "profile": "react",
-                "mode": "fixed_split",
-                "safe_padding": 0.06,
-                "max_clip_seconds": 45,
-                "single": {
-                    "zoom_x": 0.1,
-                    "zoom_y": 0.1,
-                    "pan": 0.0,
-                    "tilt": 0.0,
-                    "crop_top": 0.0,
-                    "crop_bottom": 0.0,
-                    "crop_left": 0.0,
-                    "crop_right": 0.0,
-                },
-                "gameplay": {
-                    "zoom_x": 2.62,
-                    "zoom_y": 2.62,
-                    "pan": -1.0,
-                    "tilt": 1.0,
-                    "crop_top": 0.0,
-                    "crop_bottom": 0.0,
-                    "crop_left": 0.0,
-                    "crop_right": 0.0,
-                },
-                "camera": {
-                    "zoom_x": 3.74,
-                    "zoom_y": 3.74,
-                    "pan": 1.0,
-                    "tilt": 1.0,
-                    "crop_top": 0.0,
-                    "crop_bottom": 0.42,
-                    "crop_left": 0.0,
-                    "crop_right": 0.0,
-                },
-            },
-        },
-    }
+    return _presets.default_presets()
 
 
 def _default_subtitle_presets() -> dict[str, Any]:
-    return {
-        DEFAULT_SUBTITLE_PRESET_ID: {
-            "name": DEFAULT_SUBTITLE_PRESET_ID,
-            "font": "Arial",
-            "font_style": "Bold",
-            "font_size": 0.085,
-            "color": "#FFFFFF",
-            "position_x": 0.5,
-            "position_y": 0.82,
-            "words_per_subtitle": 3,
-            "max_chars_per_line": 24,
-            "subtitle_template_name": SUBTITLE_TEMPLATE_AUTO_LABEL,
-            "subtitle_offset_ms": -500,
-        },
-        "Punchy jaune": {
-            "name": "Punchy jaune",
-            "font": "Arial",
-            "font_style": "Bold",
-            "font_size": 0.095,
-            "color": "#FFF04A",
-            "position_x": 0.5,
-            "position_y": 0.78,
-            "words_per_subtitle": 2,
-            "max_chars_per_line": 20,
-            "subtitle_template_name": SUBTITLE_TEMPLATE_AUTO_LABEL,
-            "subtitle_offset_ms": -500,
-        },
-    }
+    return _presets.default_subtitle_presets()
 
 
 def _normalize_subtitle_presets(data: dict[str, Any]) -> bool:
-    changed = False
-    defaults = _default_subtitle_presets()
-    subtitle_presets = data.get("subtitle_presets", {}) if isinstance(data, dict) else {}
-    if not isinstance(subtitle_presets, dict):
-        subtitle_presets = {}
-        changed = True
-    for preset_id, preset_data in defaults.items():
-        if preset_id not in subtitle_presets or not isinstance(subtitle_presets.get(preset_id), dict):
-            subtitle_presets[preset_id] = dict(preset_data)
-            changed = True
-    data["subtitle_presets"] = subtitle_presets
-
-    profiles = data.get("profiles", {}) if isinstance(data.get("profiles", {}), dict) else {}
-    for profile_data in profiles.values():
-        if not isinstance(profile_data, dict):
-            continue
-        active = str(profile_data.get("active_subtitle_preset", "")).strip()
-        if not active or active not in subtitle_presets:
-            profile_data["active_subtitle_preset"] = DEFAULT_SUBTITLE_PRESET_ID
-            changed = True
-    data["profiles"] = profiles
-    return changed
+    return _presets.normalize_subtitle_presets(data)
 
 
 def _coerce_float(value: Any, default: float, min_value: float | None = None, max_value: float | None = None) -> float:
-    try:
-        out = float(value)
-    except Exception:
-        out = default
-    if min_value is not None and out < min_value:
-        out = min_value
-    if max_value is not None and out > max_value:
-        out = max_value
-    return out
+    return _presets.coerce_float(value, default, min_value, max_value)
 
 
 def _coerce_int(value: Any, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
-    try:
-        out = int(float(str(value).strip()))
-    except Exception:
-        out = default
-    if min_value is not None and out < min_value:
-        out = min_value
-    if max_value is not None and out > max_value:
-        out = max_value
-    return out
+    return _presets.coerce_int(value, default, min_value, max_value)
 
 
 def _subtitle_preset_captions_overrides(preset: dict[str, Any]) -> dict[str, Any]:
-    words = _coerce_int(preset.get("words_per_subtitle", 3), 3, 1, 8)
-    max_chars = _coerce_int(preset.get("max_chars_per_line", 24), 24, 8, 80)
-    return {
-        "min_words_per_chunk": 1,
-        "preferred_words_per_chunk": words,
-        "max_words_per_chunk": words,
-        "max_chars_per_line": max_chars,
-    }
+    return _presets.subtitle_preset_captions_overrides(preset)
 
 
 def _merge_subtitle_preset_into_config(cfg: dict[str, Any], subtitle_preset: dict[str, Any] | None) -> dict[str, Any]:
-    if not subtitle_preset:
-        return cfg
-    out = dict(cfg)
-    captions = dict(out.get("captions", {}) if isinstance(out.get("captions", {}), dict) else {})
-    captions.update(_subtitle_preset_captions_overrides(subtitle_preset))
-    out["captions"] = captions
-    return out
+    return _presets.merge_subtitle_preset_into_config(cfg, subtitle_preset)
 
 
 def _subtitle_style_from_preset(preset: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(preset, dict):
-        return {}
-    return {
-        "font": str(preset.get("font", "Arial")).strip() or "Arial",
-        "font_style": str(preset.get("font_style", "Bold")).strip() or "Bold",
-        "font_size": _coerce_float(preset.get("font_size", 0.085), 0.085, 0.01, 0.5),
-        "color": str(preset.get("color", "#FFFFFF")).strip() or "#FFFFFF",
-        "position_x": _coerce_float(preset.get("position_x", 0.5), 0.5, 0.0, 1.0),
-        "position_y": _coerce_float(preset.get("position_y", 0.82), 0.82, 0.0, 1.0),
-    }
+    return _presets.subtitle_style_from_preset(preset)
 
 
 def _load_or_init_presets(root: Path) -> dict[str, Any]:
-    path = _presets_path(root)
-    if not path.exists():
-        data = _default_presets()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        return data
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    presets = data.get("presets", {}) if isinstance(data, dict) else {}
-    profiles = data.get("profiles", {}) if isinstance(data, dict) else {}
-    if not isinstance(presets, dict):
-        presets = {}
-    if not isinstance(profiles, dict):
-        profiles = {}
-    data["presets"] = presets
-    data["profiles"] = profiles
-    changed = _normalize_subtitle_presets(data)
-
-    preset_ids = list(presets.keys())
-    if preset_ids:
-        fallback_preset = preset_ids[0]
-        for profile_name, profile_data in profiles.items():
-            if not isinstance(profile_data, dict):
-                continue
-            active = str(profile_data.get("active_preset", "")).strip()
-            if active and active in presets:
-                continue
-            preferred = next(
-                (
-                    pid
-                    for pid, pdata in presets.items()
-                    if isinstance(pdata, dict) and str(pdata.get("profile", "")).strip() == str(profile_name)
-                ),
-                fallback_preset,
-            )
-            profile_data["active_preset"] = preferred
-            changed = True
-    if changed:
-        data["profiles"] = profiles
-        _save_presets(root, data)
-    return data
+    return _presets.load_or_init_presets(root)
 
 
 def _save_presets(root: Path, data: dict[str, Any]) -> None:
-    path = _presets_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
+    _presets.save_presets(root, data)
 
 
 def _assets_dir(root: Path) -> Path:
@@ -444,18 +142,7 @@ def _assets_dir(root: Path) -> Path:
 
 
 def _load_gif_frames(tk_mod: Any, gif_path: Path) -> list[Any]:
-    frames: list[Any] = []
-    if not gif_path.exists():
-        return frames
-    idx = 0
-    while True:
-        try:
-            frame = tk_mod.PhotoImage(file=str(gif_path), format=f"gif -index {idx}")
-            frames.append(frame)
-            idx += 1
-        except Exception:
-            break
-    return frames
+    return _load_gif_frames_impl(tk_mod, gif_path)
 
 
 def _load_pipeline_config(root: Path) -> dict[str, Any]:
@@ -464,189 +151,37 @@ def _load_pipeline_config(root: Path) -> dict[str, Any]:
         return json.load(f)
 
 
-def _load_installed_config_root() -> Path | None:
-    cfg = _script_config_path()
-    if cfg is None:
-        return None
-    if not cfg.exists():
-        return None
-    try:
-        with cfg.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        root = Path(str(data.get("project_root", ""))).resolve()
-        if root.exists():
-            return root
-    except Exception:
-        return None
-    return None
-
-
-def _script_path() -> Path | None:
-    raw = globals().get("__file__")
-    if raw:
-        return Path(str(raw)).resolve()
-    argv0 = sys.argv[0] if sys.argv else ""
-    if argv0:
-        p = Path(argv0)
-        if p.exists():
-            return p.resolve()
-    return None
-
-
-def _script_config_path() -> Path | None:
-    sp = _script_path()
-    if sp is not None:
-        return sp.with_name("short_editor_resolve_config.json")
-
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        p = Path(appdata) / "Blackmagic Design" / "DaVinci Resolve" / "Support" / "Fusion" / "Scripts" / "Utility" / "short_editor_resolve_config.json"
-        return p
-    return None
-
-
 def _latest_manifest(default_dir: Path) -> Path | None:
     files = sorted(default_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
 
 
 def _paths_match_lenient(left: Any, right: Any) -> bool:
-    left_text = str(left or "").strip()
-    right_text = str(right or "").strip()
-    if not left_text or not right_text:
-        return False
-    try:
-        if str(Path(left_text).resolve()).lower() == str(Path(right_text).resolve()).lower():
-            return True
-    except Exception:
-        pass
-    try:
-        left_path = Path(left_text)
-        right_path = Path(right_text)
-        if left_path.name and right_path.name and left_path.name.lower() == right_path.name.lower():
-            return True
-    except Exception:
-        pass
-    return left_text.lower() == right_text.lower()
+    return _manifests.paths_match_lenient(left, right)
 
 
 def _manifest_matches_vod(data: dict[str, Any], vod_path: Path) -> bool:
-    meta = data.get("meta", {}) if isinstance(data.get("meta", {}), dict) else {}
-    meta_vod = str(meta.get("source_vod_path", "")).strip()
-    if meta_vod and _paths_match_lenient(meta_vod, vod_path):
-        return True
-
-    source_vods = data.get("source_vods", [])
-    if isinstance(source_vods, list):
-        for src in source_vods:
-            if _paths_match_lenient(src, vod_path):
-                return True
-
-    clips = data.get("clips", [])
-    if isinstance(clips, list):
-        for clip in clips:
-            if isinstance(clip, dict) and _paths_match_lenient(clip.get("source_path", ""), vod_path):
-                return True
-    return False
+    return _manifests.manifest_matches_vod(data, vod_path)
 
 
 def _find_existing_manifest_for_vod(root: Path, vod_path: Path) -> Path | None:
-    manifest_dir = root / "output" / "manifests"
-    if not manifest_dir.exists():
-        return None
-    files = sorted(manifest_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    candidates: list[tuple[int, Path]] = []
-    for mf in files:
-        data = _read_manifest_safe(mf)
-        if not data:
-            continue
-        if _manifest_matches_vod(data, vod_path):
-            meta = data.get("meta", {}) if isinstance(data.get("meta", {}), dict) else {}
-            has_valid_subtitles = _manifest_has_valid_subtitles(root, data)
-            generated_with_subtitles = bool(meta.get("generated_with_subtitles", False))
-            if has_valid_subtitles:
-                priority = 0
-            elif generated_with_subtitles:
-                priority = 1
-            else:
-                priority = 2
-            candidates.append((priority, mf))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: (item[0], -item[1].stat().st_mtime))
-    return candidates[0][1]
+    return _manifests.find_existing_manifest_for_vod(root, vod_path)
 
 
 def _transcript_path_for_vod(root: Path, vod_path: Path) -> Path:
-    return (root / "output" / "transcripts" / f"{vod_path.stem}.json").resolve()
+    return _manifests.transcript_path_for_vod(root, vod_path)
 
 
 def _read_manifest_safe(path: Path) -> dict[str, Any] | None:
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    return _manifests.read_manifest_safe(path)
 
 
 def _manifest_has_valid_subtitles(root: Path, data: dict[str, Any]) -> bool:
-    clips = data.get("clips", [])
-    if not isinstance(clips, list) or not clips:
-        return False
-    for clip in clips:
-        if not isinstance(clip, dict):
-            return False
-        sub = str(clip.get("subtitle_path", "")).strip()
-        if not sub:
-            return False
-        sub_path = Path(sub)
-        if not sub_path.is_absolute():
-            sub_path = (root / sub_path).resolve()
-        if not sub_path.exists():
-            return False
-    return True
+    return _manifests.manifest_has_valid_textplus_source(root, data)
 
 
 def _find_reusable_quality_manifest(root: Path, vod_path: Path, preset_id: str, use_transcript_for_selection: bool, subtitle_preset_id: str = "") -> Path | None:
-    manifest_dir = root / "output" / "manifests"
-    if not manifest_dir.exists():
-        return None
-    files = sorted(manifest_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    target_vod = str(vod_path.resolve())
-    for mf in files:
-        data = _read_manifest_safe(mf)
-        if not data:
-            continue
-        meta = data.get("meta", {}) if isinstance(data.get("meta", {}), dict) else {}
-        if not bool(meta.get("generated_with_subtitles", False)):
-            continue
-        if str(meta.get("preset_id", "")).strip() != preset_id.strip():
-            continue
-        if subtitle_preset_id.strip() and str(meta.get("subtitle_preset_id", "")).strip() != subtitle_preset_id.strip():
-            continue
-        if bool(meta.get("use_transcript_for_selection", False)) != bool(use_transcript_for_selection):
-            continue
-        meta_vod = str(meta.get("source_vod_path", "")).strip()
-        if meta_vod:
-            try:
-                if str(Path(meta_vod).resolve()) != target_vod:
-                    continue
-            except Exception:
-                continue
-        else:
-            source_vods = data.get("source_vods", [])
-            if not isinstance(source_vods, list) or not source_vods:
-                continue
-            try:
-                if str(Path(str(source_vods[0])).resolve()) != target_vod:
-                    continue
-            except Exception:
-                continue
-        if not _manifest_has_valid_subtitles(root, data):
-            continue
-        return mf
-    return None
+    return _manifests.find_reusable_quality_manifest(root, vod_path, preset_id, use_transcript_for_selection, subtitle_preset_id)
 
 
 def _ask_user_inputs(
@@ -657,7 +192,6 @@ def _ask_user_inputs(
     on_update: Any,
     session_ref: dict[str, Any],
 ) -> None:
-    output_dir = _repo_root() / "output" / "resolve_renders"
     preset_name = "H264_Shorts_1080x1920_60fps"
 
     try:
@@ -677,304 +211,53 @@ def _ask_user_inputs(
         if media_pool_ui is not None:
             subtitle_template_options.extend(_list_subtitle_template_candidates(media_pool_ui))
         subtitle_template_options = list(dict.fromkeys([x for x in subtitle_template_options if str(x).strip()]))
-        preset_ids = list(presets.keys())
-        default_profile = "valo" if "valo" in profiles else (next(iter(profiles.keys()), "valo"))
-        profile_info = profiles.get(default_profile, {}) if isinstance(profiles, dict) else {}
-        active_from_profile = str(profile_info.get("active_preset", "")).strip() if isinstance(profile_info, dict) else ""
-        default_preset_id = active_from_profile if active_from_profile in presets else (preset_ids[0] if preset_ids else "")
-        subtitle_preset_ids = list(subtitle_presets.keys())
-        active_subtitle_from_profile = str(profile_info.get("active_subtitle_preset", "")).strip() if isinstance(profile_info, dict) else ""
-        default_subtitle_preset_id = active_subtitle_from_profile if active_subtitle_from_profile in subtitle_presets else (subtitle_preset_ids[0] if subtitle_preset_ids else DEFAULT_SUBTITLE_PRESET_ID)
-        keys = ("zoom_x", "zoom_y", "pan", "tilt", "crop_top", "crop_bottom", "crop_left", "crop_right")
-
-        colors = {
-            "bg": "#6FD8FF",
-            "sky": "#6FD8FF",
-            "cloud": "#FFFFFF",
-            "panel": "#D9C7FF",
-            "panel_alt": "#FFF7FF",
-            "accent": "#FF7EDB",
-            "accent_soft": "#FFB7E8",
-            "ink": "#24304F",
-            "sun": "#FFF4B2",
-            "sun_soft": "#FFFBE0",
-            "mint": "#CFFFE2",
-            "aero": "#BDF4FF",
-            "line": "#7E69D9",
-            "glow": "#FFFFFF",
-        }
-
-        state = {
-            "output_dir": str(output_dir),
-            "vod_dir": str((_repo_root() / "input").resolve()),
-            "render_preset": preset_name,
-            "profile": default_profile,
-            "preset_id": default_preset_id,
-            "subtitle_preset_id": default_subtitle_preset_id,
-            "query": "",
-            "render_master": False,
-            "subtitle_template_name": SUBTITLE_TEMPLATE_AUTO_LABEL,
-            "subtitle_offset_ms": "-500",
-        }
+        keys = _ui_main.TRANSFORM_KEYS
+        colors = dict(_ui_main.COLORS)
+        state = _ui_main.initial_state(
+            _repo_root(),
+            profiles,
+            presets,
+            subtitle_presets,
+            preset_name,
+            SUBTITLE_TEMPLATE_AUTO_LABEL,
+            DEFAULT_SUBTITLE_PRESET_ID,
+        )
+        default_profile = str(state["profile"])
+        default_preset_id = str(state["preset_id"])
+        default_subtitle_preset_id = str(state["subtitle_preset_id"])
 
         root = tk.Tk()
-        compact_geometry = "1180x860"
-        expanded_geometry = "1180x1020"
+        compact_geometry = _ui_main.COMPACT_GEOMETRY
+        expanded_geometry = _ui_main.EXPANDED_GEOMETRY
         root.title("Short Editor // Console ange digital 2003")
         root.geometry(compact_geometry)
         root.configure(bg=colors["bg"])
         _log("UI window created OK")
 
-        def play_hover_sound() -> None:
-            # Sound-ready hook: volontairement muet par défaut.
-            return
+        play_hover_sound = _ui_main.noop_sound
+        play_click_sound = _ui_main.noop_sound
+        play_notification_sound = _ui_main.noop_sound
 
-        def play_click_sound() -> None:
-            # Sound-ready hook: brancher ici un son court si souhaité.
-            return
-
-        def play_notification_sound() -> None:
-            # Sound-ready hook: notifications désactivées par défaut.
-            return
-
-        dream_bg = tk.Canvas(root, bg=colors["sky"], highlightthickness=0, bd=0)
-        dream_bg.place(x=0, y=0, relwidth=1, relheight=1)
-        try:
-            dream_bg.tk.call("lower", dream_bg._w)
-        except Exception as exc:
-            _log(f"dream_bg_lower_failed: {exc}")
-        bg_state: dict[str, Any] = {"tick": 0, "mouse_x": 0, "mouse_y": 0, "sparkles": []}
-
-        def _draw_dream_background() -> None:
-            try:
-                w = max(1, int(root.winfo_width()))
-                h = max(1, int(root.winfo_height()))
-                t = int(bg_state.get("tick", 0))
-                mx = float(bg_state.get("mouse_x", 0))
-                my = float(bg_state.get("mouse_y", 0))
-                px = (mx - w / 2) / max(1, w)
-                py = (my - h / 2) / max(1, h)
-                dream_bg.delete("all")
-
-                # Frutiger Aero sky bands and glows.
-                dream_bg.create_rectangle(0, 0, w, h, fill=colors["sky"], outline="")
-                dream_bg.create_oval(-160 + px * 28, -120 + py * 16, 360 + px * 28, 260 + py * 16, fill="#FFFFFF", outline="#BDF4FF")
-                dream_bg.create_oval(w - 320 + px * -24, 40 + py * 18, w + 220 + px * -24, 460 + py * 18, fill="#CFFFE2", outline="#7EE8B4")
-                dream_bg.create_oval(w / 2 - 260, h - 220, w / 2 + 260, h + 120, fill="#FFB7E8", outline="#FF7EDB")
-
-                # Slow cloud layer.
-                for i in range(7):
-                    base_x = (i * 210 - (t * (1 + i % 2)) % (w + 240)) - 120 + px * (12 + i)
-                    base_y = 64 + (i % 3) * 52 + py * (6 + i)
-                    for j, r in enumerate((38, 54, 44, 32)):
-                        x = base_x + j * 42
-                        dream_bg.create_oval(x, base_y - r / 2, x + r * 2, base_y + r, fill="#FFFFFF", outline="#D9C7FF")
-
-                # Floating stars, hearts and pixel sparkles.
-                glyphs = ["✦", "✧", "★", "♡", "◇", "☁"]
-                for i in range(42):
-                    x = (i * 83 + t * (1 + i % 4)) % (w + 80) - 40 + px * (4 + i % 9)
-                    y = (i * 47 + (t // 2) * (1 + i % 3)) % (h + 80) - 40 + py * (3 + i % 7)
-                    color = ["#FFFFFF", "#FFF4B2", "#FF7EDB", "#B99CFF", "#5EE8A5"][i % 5]
-                    font_size = 9 + (i % 5)
-                    dream_bg.create_text(x, y, text=glyphs[i % len(glyphs)], fill=color, font=("Verdana", font_size, "bold"))
-
-                # Subtle retro grain.
-                for i in range(38):
-                    x = (i * 131 + t * 7) % w
-                    y = (i * 71 + t * 5) % h
-                    dream_bg.create_rectangle(x, y, x + 1, y + 1, fill="#FFFFFF", outline="")
-
-                # Cursor trail / click sparkles.
-                next_sparkles = []
-                for sp in list(bg_state.get("sparkles", [])):
-                    x, y, life, glyph = sp
-                    if life <= 0:
-                        continue
-                    dream_bg.create_text(x, y - (10 - life), text=glyph, fill="#FFFFFF", font=("Verdana", 12 + life % 5, "bold"))
-                    next_sparkles.append((x, y, life - 1, glyph))
-                bg_state["sparkles"] = next_sparkles
-                bg_state["tick"] = t + 1
-                root.after(90, _draw_dream_background)
-            except Exception:
-                pass
-
-        def _remember_mouse(event: Any) -> None:
-            bg_state["mouse_x"] = getattr(event, "x", 0)
-            bg_state["mouse_y"] = getattr(event, "y", 0)
-
-        def _spawn_click_sparkles(event: Any) -> None:
-            play_click_sound()
-            x = getattr(event, "x", 0)
-            y = getattr(event, "y", 0)
-            sparkles = list(bg_state.get("sparkles", []))
-            for glyph in ("✦", "♡", "✧", "★"):
-                sparkles.append((x, y, 10, glyph))
-            bg_state["sparkles"] = sparkles[-48:]
-
-        root.bind("<Motion>", _remember_mouse)
-        root.bind("<Button-1>", _spawn_click_sparkles, add="+")
-        root.after(120, _draw_dream_background)
-
-        header = tk.Frame(root, bg=colors["accent_soft"], bd=4, relief="ridge")
-        header.grid(row=0, column=0, columnspan=3, sticky="we", padx=10, pady=(10, 8))
-        tk.Label(
-            header,
-            text="✧ Kirby Ate your VOD ! ✧",
-            bg=colors["accent_soft"],
-            fg=colors["ink"],
-            font=("Verdana", 15, "bold"),
-            padx=10,
-            pady=8,
-        ).pack(side="left")
-        keyv_label = tk.Label(
-            header,
-            text="● EN LIGNE  MSN ✦ XP ✦ KEYV",
-            bg=colors["sun_soft"],
-            fg="#2C8A55",
-            font=("Tahoma", 9, "bold"),
-            padx=10,
-            pady=4,
-        )
-        keyv_label.pack(side="right")
-        keyv_label.bind("<Enter>", lambda _event: keyv_label.configure(text="Kirby Eats your VOD"))
-        keyv_label.bind("<Leave>", lambda _event: keyv_label.configure(text="● EN LIGNE  MSN ✦ XP ✦ KEYV"))
+        _ui_main.create_dream_background(tk, root, colors, _log, play_click_sound)
 
         def ui_button(parent: Any, text: str, cmd: Any, primary: bool = False) -> Any:
-            base_bg = colors["accent"] if primary else colors["sun"]
-            hover_bg = "#FFFFFF" if primary else colors["mint"]
-            btn = tk.Button(
-                parent,
-                text=f"✦ {text} ✦" if primary else text,
-                command=lambda: (play_click_sound(), cmd()),
-                bg=base_bg,
-                fg="#FFFFFF" if primary else colors["ink"],
-                activebackground=colors["accent_soft"] if primary else colors["sun_soft"],
-                activeforeground=colors["ink"],
-                bd=4,
-                relief="raised",
-                padx=12,
-                pady=5,
-                cursor="hand2",
-                font=("Verdana", 9, "bold"),
-            )
-
-            def _enter(_event: Any) -> None:
-                play_hover_sound()
-                btn.configure(bg=hover_bg, relief="ridge")
-
-            def _leave(_event: Any) -> None:
-                btn.configure(bg=base_bg, relief="raised")
-
-            def _press(_event: Any) -> None:
-                btn.configure(relief="sunken", padx=14)
-
-            def _release(_event: Any) -> None:
-                btn.configure(relief="ridge", padx=12)
-
-            btn.bind("<Enter>", _enter)
-            btn.bind("<Leave>", _leave)
-            btn.bind("<ButtonPress-1>", _press, add="+")
-            btn.bind("<ButtonRelease-1>", _release, add="+")
-            return btn
+            return _ui_main.create_ui_button(tk, parent, text, cmd, colors, play_click_sound, play_hover_sound, primary)
 
         def make_label(text: str, r: int, c: int) -> None:
-            tk.Label(form, text=f"♡ {text}", bg=colors["panel_alt"], fg=colors["ink"], font=("Tahoma", 9, "bold"), bd=1, relief="flat").grid(row=r, column=c, sticky="w", padx=8, pady=6)
+            _ui_main.create_form_label(tk, form, text, r, c, colors)
 
-        tabs_bar = tk.Frame(root, bg=colors["sky"])
-        tabs_bar.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 0))
-
-        tabs_body = tk.Frame(root, bg=colors["sky"])
-        tabs_body.grid(row=2, column=0, columnspan=3, sticky="nw", padx=10, pady=(0, 0))
-
-        batch_tab = tk.Frame(tabs_body, bg=colors["sky"])
-        actions_tab = tk.Frame(tabs_body, bg=colors["sky"])
-        tab_buttons: dict[str, Any] = {}
-
-        def show_tab(name: str) -> None:
-            for frame in (batch_tab, actions_tab):
-                frame.grid_forget()
-            active_frame = batch_tab if name == "batch" else actions_tab
-            active_frame.grid(row=0, column=0, sticky="nw")
-            for key, btn in tab_buttons.items():
-                active = key == name
-                btn.configure(
-                    bg=colors["accent_soft"] if active else colors["sun_soft"],
-                    fg=colors["ink"],
-                    relief="sunken" if active else "ridge",
-                )
-
-        tab_buttons["batch"] = tk.Button(
-            tabs_bar,
-            text="☁ Batch génération ✧",
-            command=lambda: show_tab("batch"),
-            bg=colors["accent_soft"],
-            fg=colors["ink"],
-            activebackground=colors["accent_soft"],
-            activeforeground=colors["ink"],
-            bd=4,
-            relief="sunken",
-            padx=12,
-            pady=5,
-            cursor="hand2",
-            font=("Verdana", 10, "bold"),
-        )
-        tab_buttons["batch"].pack(side="left", padx=(0, 4), pady=(0, 6))
-        tab_buttons["actions"] = tk.Button(
-            tabs_bar,
-            text="♡ Actions timeline ★",
-            command=lambda: show_tab("actions"),
-            bg=colors["sun_soft"],
-            fg=colors["ink"],
-            activebackground=colors["sun_soft"],
-            activeforeground=colors["ink"],
-            bd=4,
-            relief="ridge",
-            padx=12,
-            pady=5,
-            cursor="hand2",
-            font=("Verdana", 10, "bold"),
-        )
-        tab_buttons["actions"].pack(side="left", padx=(0, 4), pady=(0, 6))
-
-        companion = tk.Frame(tabs_bar, bg=colors["panel_alt"], bd=3, relief="ridge")
-        companion.pack(side="right", padx=(8, 0), pady=(0, 6))
-        companion_orb = tk.Canvas(companion, width=44, height=44, bg=colors["panel_alt"], highlightthickness=0, bd=0)
-        companion_orb.pack(side="left", padx=(6, 4), pady=4)
-        companion_text = tk.Label(
-            companion,
-            text="ange digital\nhumeur: rêveuse",
-            bg=colors["panel_alt"],
-            fg=colors["ink"],
-            font=("Tahoma", 8, "bold"),
-            justify="left",
-        )
-        companion_text.pack(side="left", padx=(0, 8), pady=4)
-
-        def _pulse_companion(step: int = 0) -> None:
-            try:
-                companion_orb.delete("all")
-                r = 13 + (step % 8 if step % 16 < 8 else 16 - step % 16)
-                companion_orb.create_oval(22 - r, 22 - r, 22 + r, 22 + r, fill="#FFFFFF", outline=colors["accent"], width=2)
-                companion_orb.create_oval(14, 10, 30, 28, fill=colors["aero"], outline="")
-                companion_orb.create_text(22, 22, text="♡", fill=colors["accent"], font=("Verdana", 13, "bold"))
-                companion_orb.create_text(36, 9, text="✦", fill=colors["sun"], font=("Verdana", 10, "bold"))
-                root.after(160, lambda: _pulse_companion(step + 1))
-            except Exception:
-                pass
-
-        root.after(180, _pulse_companion)
-
-        tabs_body.columnconfigure(0, weight=1)
-        tabs_body.rowconfigure(0, weight=0)
-        batch_tab.columnconfigure(1, weight=1)
+        main_ui = _ui_main.create_header_and_tabs(tk, root, colors)
+        tabs_body = main_ui["tabs_body"]
+        batch_tab = main_ui["batch_tab"]
+        actions_tab = main_ui["actions_tab"]
+        show_tab = main_ui["show_tab"]
 
         form = tk.LabelFrame(batch_tab, text="☁ Paramètres du batch ☁", bg=colors["panel_alt"], fg=colors["ink"], bd=4, relief="ridge", padx=10, pady=10, font=("Verdana", 10, "bold"))
         form.grid(row=0, column=0, columnspan=3, sticky="we", padx=0, pady=(0, 8))
 
         make_label("Dossier de sortie", 0, 0)
         output_var = tk.StringVar(value=state["output_dir"])
-        tk.Entry(form, textvariable=output_var, width=80, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=0, column=1, padx=8, pady=6, sticky="we")
+        _ui_main.create_text_entry(tk, form, output_var, 0, 1, colors)
 
         def browse_output() -> None:
             p = filedialog.askdirectory(title="Sélectionner le dossier de sortie", initialdir=output_var.get())
@@ -983,32 +266,17 @@ def _ask_user_inputs(
 
         ui_button(form, "Parcourir", browse_output).grid(row=0, column=2, padx=8, pady=6)
 
-        make_label("Dossier VOD de secours", 1, 0)
-        vod_dir_var = tk.StringVar(value=state["vod_dir"])
-        tk.Entry(form, textvariable=vod_dir_var, width=80, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=1, column=1, padx=8, pady=6, sticky="we")
-
-        def browse_vod_dir() -> None:
-            p = filedialog.askdirectory(title="Sélectionner le dossier VOD", initialdir=vod_dir_var.get())
-            if p:
-                vod_dir_var.set(p)
-
-        ui_button(form, "Parcourir", browse_vod_dir).grid(row=1, column=2, padx=8, pady=6)
-
-        make_label("Preset rendu", 2, 0)
+        make_label("Preset rendu", 1, 0)
         render_var = tk.StringVar(value=state["render_preset"])
-        tk.Entry(form, textvariable=render_var, width=40, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=2, column=1, padx=8, pady=6, sticky="w")
+        _ui_main.create_text_entry(tk, form, render_var, 1, 1, colors, width=40, sticky="w")
 
-        make_label("Profil batch", 3, 0)
+        make_label("Profil batch", 2, 0)
         profile_var = tk.StringVar(value=state["profile"])
-        profile_menu = tk.OptionMenu(form, profile_var, *["valo", "jeu", "react"])
-        profile_menu.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"]) 
-        profile_menu.grid(row=3, column=1, padx=8, pady=6, sticky="w")
+        profile_menu = _ui_main.create_option_menu(tk, form, profile_var, ["valo", "jeu", "react"], 2, 1, colors)
 
-        make_label("Preset", 4, 0)
+        make_label("Preset", 3, 0)
         preset_var = tk.StringVar(value=state["preset_id"])
-        preset_menu = tk.OptionMenu(form, preset_var, *list(presets.keys()))
-        preset_menu.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"]) 
-        preset_menu.grid(row=4, column=1, padx=8, pady=6, sticky="w")
+        preset_menu = _ui_main.create_option_menu(tk, form, preset_var, list(presets.keys()), 3, 1, colors)
 
         status_setter: dict[str, Any] = {"fn": None}
 
@@ -1020,7 +288,7 @@ def _ask_user_inputs(
                 fn(f"Preset loadé: {pid}", warnings=[])
             _log(f"Preset loaded: {pid}")
 
-        ui_button(form, "Charger", load_current_preset).grid(row=4, column=2, padx=8, pady=6, sticky="w")
+        ui_button(form, "Charger", load_current_preset).grid(row=3, column=2, padx=8, pady=6, sticky="w")
 
         query_var = tk.StringVar(value="")
         transcript_select_var = tk.BooleanVar(value=False)
@@ -1061,114 +329,31 @@ def _ask_user_inputs(
         def open_subtitle_preset_editor() -> None:
             sid = subtitle_preset_var.get().strip() or DEFAULT_SUBTITLE_PRESET_ID
             base = dict(subtitle_presets.get(sid, _default_subtitle_presets()[DEFAULT_SUBTITLE_PRESET_ID]))
-            top = tk.Toplevel(root)
-            top.title("Éditeur preset sous-titres")
-            top.geometry("620x520")
-            top.configure(bg=colors["panel_alt"])
-            top.transient(root)
-
-            fields = tk.Frame(top, bg=colors["panel_alt"])
-            fields.pack(fill="both", expand=True, padx=10, pady=10)
-
-            name_var = tk.StringVar(value=sid)
-            font_var = tk.StringVar(value=str(base.get("font", "Arial")))
-            font_style_var = tk.StringVar(value=str(base.get("font_style", "Bold")))
-            font_size_var = tk.StringVar(value=str(base.get("font_size", 0.085)))
-            color_var = tk.StringVar(value=str(base.get("color", "#FFFFFF")))
-            pos_x_var = tk.StringVar(value=str(base.get("position_x", 0.5)))
-            pos_y_var = tk.StringVar(value=str(base.get("position_y", 0.82)))
-            words_var = tk.StringVar(value=str(base.get("words_per_subtitle", 3)))
-            chars_var = tk.StringVar(value=str(base.get("max_chars_per_line", 24)))
-            template_var = tk.StringVar(value=str(base.get("subtitle_template_name", subtitle_template_var.get() or SUBTITLE_TEMPLATE_AUTO_LABEL)))
-            offset_var = tk.StringVar(value=str(base.get("subtitle_offset_ms", subtitle_offset_ms_var.get() or -500)))
-
-            rows = [
-                ("Nom", name_var, "entry"),
-                ("Police", font_var, "entry"),
-                ("Style police", font_style_var, "entry"),
-                ("Taille", font_size_var, "entry"),
-                ("Couleur #RRGGBB", color_var, "entry"),
-                ("Position X (0..1)", pos_x_var, "entry"),
-                ("Position Y (0..1)", pos_y_var, "entry"),
-                ("Mots par sous-titre", words_var, "entry"),
-                ("Caractères par ligne", chars_var, "entry"),
-                ("Modèle Text+", template_var, "menu"),
-                ("Décalage ms", offset_var, "entry"),
-            ]
-            for idx, (label, var, kind) in enumerate(rows):
-                tk.Label(fields, text=f"♡ {label}", bg=colors["panel_alt"], fg=colors["ink"], font=("Tahoma", 9, "bold")).grid(row=idx, column=0, sticky="w", padx=6, pady=5)
-                if kind == "menu":
-                    opt = tk.OptionMenu(fields, var, *subtitle_template_options)
-                    opt.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"])
-                    opt.grid(row=idx, column=1, sticky="w", padx=6, pady=5)
-                else:
-                    tk.Entry(fields, textvariable=var, width=34, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"]).grid(row=idx, column=1, sticky="w", padx=6, pady=5)
-
-            hint = tk.Label(top, text="Position: X=0 gauche, 0.5 centre, 1 droite | Y=0 bas, 1 haut selon Fusion/Resolve.", bg=colors["panel_alt"], fg=colors["ink"], anchor="w")
-            hint.pack(fill="x", padx=10, pady=(0, 6))
-
-            def build_preset() -> dict[str, Any] | None:
-                name = name_var.get().strip()
-                if not name:
-                    messagebox.showerror("Short Editor", "Nom de preset sous-titres vide")
-                    return None
-                return {
-                    "name": name,
-                    "font": font_var.get().strip() or "Arial",
-                    "font_style": font_style_var.get().strip() or "Bold",
-                    "font_size": _coerce_float(font_size_var.get(), 0.085, 0.01, 0.5),
-                    "color": color_var.get().strip() or "#FFFFFF",
-                    "position_x": _coerce_float(pos_x_var.get(), 0.5, 0.0, 1.0),
-                    "position_y": _coerce_float(pos_y_var.get(), 0.82, 0.0, 1.0),
-                    "words_per_subtitle": _coerce_int(words_var.get(), 3, 1, 8),
-                    "max_chars_per_line": _coerce_int(chars_var.get(), 24, 8, 80),
-                    "subtitle_template_name": template_var.get().strip() or SUBTITLE_TEMPLATE_AUTO_LABEL,
-                    "subtitle_offset_ms": _coerce_int(offset_var.get(), -500, -5000, 5000),
-                }
-
-            def save_subtitle_preset() -> None:
-                p = build_preset()
-                if p is None:
-                    return
-                name = str(p["name"])
-                subtitle_presets[name] = p
-                presets_data["subtitle_presets"] = subtitle_presets
-                profiles.setdefault(profile_var.get().strip(), {})["active_subtitle_preset"] = name
-                _save_presets(_repo_root(), presets_data)
-                subtitle_preset_var.set(name)
-                subtitle_template_var.set(str(p.get("subtitle_template_name", SUBTITLE_TEMPLATE_AUTO_LABEL)))
-                subtitle_offset_ms_var.set(str(p.get("subtitle_offset_ms", -500)))
-                refresh_subtitle_preset_menu()
-                set_status(f"Preset sous-titres enregistré: {name}", warnings=[])
-                messagebox.showinfo("Short Editor", f"Preset sous-titres enregistré: {name}")
-
-            def delete_subtitle_preset() -> None:
-                name = name_var.get().strip()
-                if name not in subtitle_presets:
-                    return
-                if len(subtitle_presets) <= 1:
-                    messagebox.showwarning("Short Editor", "Impossible de supprimer le dernier preset sous-titres.")
-                    return
-                if not messagebox.askyesno("Supprimer", f"Supprimer le preset sous-titres '{name}' ?"):
-                    return
-                del subtitle_presets[name]
-                replacement = next(iter(subtitle_presets.keys()))
-                for profile_data in profiles.values():
-                    if isinstance(profile_data, dict) and profile_data.get("active_subtitle_preset") == name:
-                        profile_data["active_subtitle_preset"] = replacement
-                presets_data["subtitle_presets"] = subtitle_presets
-                _save_presets(_repo_root(), presets_data)
-                subtitle_preset_var.set(replacement)
-                load_subtitle_preset(replacement)
-                refresh_subtitle_preset_menu()
-                top.destroy()
-                set_status(f"Preset sous-titres supprimé: {name}", warnings=[])
-
-            controls = tk.Frame(top, bg=colors["panel_alt"])
-            controls.pack(fill="x", padx=10, pady=(0, 10))
-            ui_button(controls, "Enregistrer", save_subtitle_preset, primary=True).pack(side="right", padx=4)
-            ui_button(controls, "Supprimer", delete_subtitle_preset, primary=False).pack(side="right", padx=4)
-            ui_button(controls, "Fermer", top.destroy, primary=False).pack(side="right", padx=4)
+            _ui_presets.open_subtitle_preset_editor(
+                tk,
+                messagebox,
+                root,
+                colors,
+                ui_button,
+                sid,
+                base,
+                subtitle_template_options,
+                SUBTITLE_TEMPLATE_AUTO_LABEL,
+                subtitle_presets,
+                presets_data,
+                profiles,
+                profile_var,
+                subtitle_preset_var,
+                subtitle_template_var,
+                subtitle_offset_ms_var,
+                refresh_subtitle_preset_menu,
+                load_subtitle_preset,
+                _save_presets,
+                _repo_root,
+                set_status,
+                _coerce_float,
+                _coerce_int,
+            )
 
         make_label("Preset sous-titres", 5, 0)
         subtitle_preset_row = tk.Frame(form, bg=colors["panel_alt"])
@@ -1180,101 +365,11 @@ def _ask_user_inputs(
         ui_button(subtitle_preset_row, "Éditer", open_subtitle_preset_editor, primary=False).pack(side="left")
 
         make_label("Recherche transcript", 6, 0)
-        tk.Entry(form, textvariable=query_var, width=80, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=6, column=1, padx=8, pady=6, sticky="we")
+        _ui_main.create_text_entry(tk, form, query_var, 6, 1, colors)
 
         def open_keywords_editor() -> None:
             try:
-                root_dir = _repo_root()
-                lexicon_path = root_dir / "config" / "transcript_lexicon_user.json"
-                default_categories = {"drole": {}, "clivant": {}, "etonnant": {}}
-                data: dict[str, Any] = {"version": 1, "updated_at": "", "categories": default_categories}
-                if lexicon_path.exists():
-                    try:
-                        with lexicon_path.open("r", encoding="utf-8") as f:
-                            loaded = json.load(f)
-                        if isinstance(loaded, dict):
-                            data = loaded
-                    except Exception:
-                        pass
-
-                cats = data.get("categories", {}) if isinstance(data.get("categories", {}), dict) else {}
-                for cat_name in ("drole", "clivant", "etonnant"):
-                    if not isinstance(cats.get(cat_name), dict):
-                        cats[cat_name] = {}
-
-                top = tk.Toplevel(root)
-                top.title("Mots-clés transcript")
-                top.geometry("780x560")
-                top.configure(bg=colors["panel_alt"])
-                top.transient(root)
-
-                frame = tk.Frame(top, bg=colors["panel_alt"])
-                frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-                text_boxes: dict[str, Any] = {}
-                order = ("drole", "clivant", "etonnant")
-                for idx, cat_name in enumerate(order):
-                    section = tk.LabelFrame(frame, text=f"✧ {cat_name} ✧", bg=colors["panel"], fg=colors["ink"], bd=4, relief="ridge")
-                    section.grid(row=0, column=idx, padx=6, pady=6, sticky="nsew")
-                    frame.grid_columnconfigure(idx, weight=1)
-                    frame.grid_rowconfigure(0, weight=1)
-
-                    txt = tk.Text(section, width=24, height=24, bg=colors["sun_soft"], fg=colors["ink"], bd=3, relief="sunken", insertbackground=colors["accent"], font=("Tahoma", 9))
-                    txt.pack(fill="both", expand=True, padx=6, pady=6)
-                    rows: list[str] = []
-                    table = cats.get(cat_name, {}) if isinstance(cats, dict) else {}
-                    if isinstance(table, dict):
-                        for k, v in sorted(table.items(), key=lambda kv: kv[0]):
-                            rows.append(f"{k}={v}")
-                    txt.insert("1.0", "\n".join(rows))
-                    text_boxes[cat_name] = txt
-
-                hint = tk.Label(
-                    top,
-                    text="Format: mot=poids (un par ligne). Exemple: incroyable=1.2",
-                    bg=colors["panel_alt"],
-                    fg=colors["ink"],
-                    anchor="w",
-                )
-                hint.pack(fill="x", padx=10, pady=(0, 6))
-
-                def save_keywords() -> None:
-                    updated_categories: dict[str, dict[str, float]] = {"drole": {}, "clivant": {}, "etonnant": {}}
-                    for cat_name, box in text_boxes.items():
-                        raw = box.get("1.0", "end").splitlines()
-                        for line_no, line in enumerate(raw, start=1):
-                            s = line.strip()
-                            if not s:
-                                continue
-                            if "=" not in s:
-                                messagebox.showerror("Short Editor", f"{cat_name} ligne {line_no}: format attendu mot=poids")
-                                return
-                            key, value = s.split("=", 1)
-                            token = key.strip().lower()
-                            if not token:
-                                messagebox.showerror("Short Editor", f"{cat_name} ligne {line_no}: mot-clé vide")
-                                return
-                            try:
-                                weight = float(value.strip())
-                            except Exception:
-                                messagebox.showerror("Short Editor", f"{cat_name} ligne {line_no}: poids invalide")
-                                return
-                            updated_categories[cat_name][token] = round(weight, 3)
-
-                    data["version"] = int(data.get("version", 1) or 1)
-                    data["categories"] = updated_categories
-                    data["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                    lexicon_path.parent.mkdir(parents=True, exist_ok=True)
-                    with lexicon_path.open("w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=2, ensure_ascii=False)
-                        f.write("\n")
-                    set_status("Mots-clés transcript enregistrés", warnings=[])
-                    messagebox.showinfo("Short Editor", f"Enregistré: {lexicon_path}")
-
-                controls = tk.Frame(top, bg=colors["panel_alt"])
-                controls.pack(fill="x", padx=10, pady=(0, 8))
-                ui_button(controls, "Enregistrer", save_keywords, primary=True).pack(side="right", padx=4)
-                ui_button(controls, "Fermer", top.destroy, primary=False).pack(side="right", padx=4)
+                _ui_keywords.open_keywords_editor(tk, messagebox, root, colors, _repo_root(), ui_button, set_status)
             except Exception as exc:
                 set_status(f"Erreur éditeur mots-clés: {exc}")
 
@@ -1302,12 +397,10 @@ def _ask_user_inputs(
         ).pack(side="left", padx=(10, 0))
 
         make_label("Modèle de sous-titres", 8, 0)
-        subtitle_template_menu = tk.OptionMenu(form, subtitle_template_var, *subtitle_template_options)
-        subtitle_template_menu.config(bg=colors["sun"], fg=colors["ink"], bd=2, relief="raised", activebackground=colors["sun_soft"])
-        subtitle_template_menu.grid(row=8, column=1, padx=8, pady=6, sticky="w")
+        subtitle_template_menu = _ui_main.create_option_menu(tk, form, subtitle_template_var, subtitle_template_options, 8, 1, colors)
 
         make_label("Décalage sous-titres (ms)", 9, 0)
-        tk.Entry(form, textvariable=subtitle_offset_ms_var, width=12, bd=3, relief="sunken", bg="#FFFFFF", fg=colors["ink"], insertbackground=colors["accent"], font=("Tahoma", 9)).grid(row=9, column=1, padx=8, pady=6, sticky="w")
+        _ui_main.create_text_entry(tk, form, subtitle_offset_ms_var, 9, 1, colors, width=12, sticky="w")
 
         master_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
@@ -1381,12 +474,7 @@ def _ask_user_inputs(
         tk.Label(editor_fields, textvariable=mode_label_var, bg=colors["panel"], fg=colors["ink"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=4, sticky="w")
 
         def _slider_bounds(prop_key: str) -> tuple[float, float, float]:
-            if prop_key.startswith("zoom"):
-                return (0.1, 8.0, 0.01)
-            if prop_key in ("pan", "tilt"):
-                return (-1.0, 1.0, 0.01)
-            # crop values are 0..1 in Resolve
-            return (0.0, 1.0, 0.01)
+            return _ui_presets.slider_bounds(prop_key)
 
         def _add_numeric_control(parent: Any, r: int, c: int, fk: str, key: str) -> None:
             field_vars[fk] = tk.StringVar(value="0")
@@ -1467,318 +555,91 @@ def _ask_user_inputs(
 
         def load_editor_from_preset(pid: str) -> None:
             p = dict(presets.get(pid, {}))
-            mode = str(p.get("mode", "single"))
-            preset_mode_var.set(mode)
-            mode_label_var.set(f"mode: {mode}")
-            safe_padding_var.set(str(p.get("safe_padding", 0.04)))
-            default_layers = 2 if mode == "fixed_split" else 1
-            layers_count_var.set(str(int(p.get("layers_count", default_layers))))
-            for group in ("single", "gameplay", "camera"):
-                section = dict(p.get(group, {}))
-                for key in keys:
-                    fk = f"{group}.{key}"
-                    v = float(section.get(key, 0.0))
-                    field_vars[fk].set(str(v))
-                    if fk in slider_vars:
-                        slider_vars[fk].set(v)
+            values = _ui_presets.editor_values_from_preset(p, keys)
+            preset_mode_var.set(str(values["mode"]))
+            mode_label_var.set(str(values["mode_label"]))
+            safe_padding_var.set(str(values["safe_padding"]))
+            layers_count_var.set(str(values["layers_count"]))
+            for fk, value in dict(values["fields"]).items():
+                if fk in field_vars:
+                    field_vars[fk].set(str(value))
+                if fk in slider_vars:
+                    slider_vars[fk].set(float(value))
 
         def detect_preset_from_timeline() -> None:
-            project_manager = _safe_call(resolve, "GetProjectManager")
-            project = _safe_call(project_manager, "GetCurrentProject") if project_manager else None
-            if not project:
-                set_status("Détection impossible: aucun projet ouvert")
-                return
-            timeline = _safe_call(project, "GetCurrentTimeline")
-            if not timeline:
-                set_status("Détection impossible: aucune timeline active")
-                return
-
             mode_label = detect_mode_var.get().strip()
             mode = "current" if mode_label == "Frame actuelle" else "first"
             detect_mode_label.config(text=f"Détection: {mode_label}")
-            if mode == "current":
-                cam_item = _get_item_at_current_frame(timeline, 1)
-                game_item = _get_item_at_current_frame(timeline, 2)
-            else:
-                cam_item = _get_first_item_on_track(timeline, 1)
-                game_item = _get_first_item_on_track(timeline, 2)
-
-            _log(f"Detect preset mode={mode} mapping camera->T1 gameplay->T2")
-
-            if not cam_item:
-                set_status("Détection impossible: aucun clip sur la piste 1")
-                return
-            if not game_item:
-                set_status("Détection impossible: aucun clip sur la piste 2")
+            deps = _timeline_actions.TimelineActionDeps(
+                safe_call=_safe_call,
+                log=_log,
+                get_item_at_current_frame=_get_item_at_current_frame,
+                get_first_item_on_track=_get_first_item_on_track,
+                apply_preset_to_selected_clip=_apply_preset_to_selected_clip,
+            )
+            result = _timeline_actions.detect_fixed_split_preset_from_timeline(resolve, mode, deps, keys)
+            if not result.get("ok"):
+                set_status(str(result.get("message", "Détection impossible")))
                 return
 
             preset_mode_var.set("fixed_split")
             mode_label_var.set("mode: fixed_split")
+            for field_key, value in dict(result.get("fields", {})).items():
+                if field_key in field_vars:
+                    field_vars[field_key].set(f"{float(value):.3f}")
+                if field_key in slider_vars:
+                    slider_vars[field_key].set(float(value))
 
-            def _read_prop(item: Any, prop: str) -> float | None:
-                v = _safe_call(item, "GetProperty", prop, default=None)
-                if v is None:
-                    all_props = _safe_call(item, "GetProperty", default={}) or {}
-                    v = all_props.get(prop)
-                try:
-                    return float(v)
-                except Exception:
-                    return None
-
-            key_map = {
-                "zoom_x": "ZoomX",
-                "zoom_y": "ZoomY",
-                "pan": "Pan",
-                "tilt": "Tilt",
-                "crop_top": "CropTop",
-                "crop_bottom": "CropBottom",
-                "crop_left": "CropLeft",
-                "crop_right": "CropRight",
-            }
-
-            for key in keys:
-                fk_cam = f"camera.{key}"
-                fk_game = f"gameplay.{key}"
-                rk = key_map[key]
-                cam_v = _read_prop(cam_item, rk)
-                game_v = _read_prop(game_item, rk)
-                is_primary = key in ("zoom_x", "zoom_y", "pan", "tilt")
-
-                if cam_v is not None and (is_primary or key.startswith("crop")):
-                    if fk_cam in field_vars:
-                        field_vars[fk_cam].set(f"{cam_v:.3f}")
-                    if fk_cam in slider_vars:
-                        slider_vars[fk_cam].set(cam_v)
-                if game_v is not None and (is_primary or key.startswith("crop")):
-                    if fk_game in field_vars:
-                        field_vars[fk_game].set(f"{game_v:.3f}")
-                    if fk_game in slider_vars:
-                        slider_vars[fk_game].set(game_v)
-
-            set_status("Preset détecté depuis la timeline active (piste 1=caméra, piste 2=gameplay)")
+            set_status(str(result.get("message", "Preset détecté")))
 
         ui_button(preset_toolbar, "Détecter le preset", detect_preset_from_timeline).pack(side="left", padx=(0, 6))
 
         def preset_from_editor(base: dict[str, Any]) -> dict[str, Any]:
-            out = dict(base)
-            out["mode"] = preset_mode_var.get().strip() or "single"
-            try:
-                out["layers_count"] = max(1, min(4, int(float(layers_count_var.get().strip()))))
-            except Exception:
-                out["layers_count"] = 2 if out["mode"] == "fixed_split" else 1
-            for group in ("single", "gameplay", "camera"):
-                out[group] = {}
-                for key in keys:
-                    raw = field_vars[f"{group}.{key}"].get().strip()
-                    try:
-                        out[group][key] = float(raw)
-                    except Exception:
-                        out[group][key] = 0.0
-            try:
-                out["safe_padding"] = float(safe_padding_var.get().strip())
-            except Exception:
-                out["safe_padding"] = 0.04
-            return out
+            field_values = {name: var.get().strip() for name, var in field_vars.items()}
+            return _ui_presets.preset_from_editor_values(
+                base,
+                preset_mode_var.get(),
+                layers_count_var.get(),
+                safe_padding_var.get(),
+                field_values,
+                keys,
+            )
 
         status_var = tk.StringVar(value="Prêt")
         last_warnings: list[str] = []
 
         def open_warnings_window() -> None:
-            if not last_warnings:
-                return
-            top = tk.Toplevel(root)
-            top.title("Avertissements batch")
-            top.geometry("980x420")
-            top.configure(bg=colors["panel_alt"])
-
-            tk.Label(top, text=f"{len(last_warnings)} avertissement(s)", bg=colors["panel_alt"], fg=colors["ink"], font=("Segoe UI", 10, "bold"), anchor="w").pack(fill="x", padx=10, pady=(10, 4))
-
-            wrap = tk.Frame(top, bg=colors["panel_alt"])
-            wrap.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-            scroll = tk.Scrollbar(wrap, orient="vertical")
-            text = tk.Text(wrap, yscrollcommand=scroll.set, wrap="word", bg="#FFFFFF", fg=colors["ink"], bd=2, relief="sunken", font=("Consolas", 10))
-            scroll.config(command=text.yview)
-            scroll.pack(side="right", fill="y")
-            text.pack(side="left", fill="both", expand=True)
-
-            for i, w in enumerate(last_warnings, start=1):
-                text.insert("end", f"{i}. {w}\n")
-            text.config(state="disabled")
+            _ui_status.open_warnings_window(tk, root, colors, last_warnings)
 
         def set_status(message: str, warnings: list[str] | None = None) -> None:
             nonlocal last_warnings
-            if warnings is not None:
-                last_warnings = list(warnings)
-            status_var.set(message)
-            status_text.config(state="normal")
-            status_text.delete("1.0", "end")
-            status_text.insert("1.0", message)
-            status_text.tag_remove("clickable_warning", "1.0", "end")
-            if last_warnings:
-                m = re.search(r"\(\d+\s+(?:warnings|avertissements)\)", message)
-                if m:
-                    status_text.tag_add("clickable_warning", f"1.0+{m.start()}c", f"1.0+{m.end()}c")
-            status_text.config(state="disabled")
+            last_warnings = _ui_status.set_status_text(status_var, status_text, message, last_warnings, warnings)
 
         status_setter["fn"] = set_status
 
         def open_rate_batch_window() -> None:
-            manifest_value = session_ref.get("manifest") or default_manifest
-            if not manifest_value:
-                set_status("Noter le batch indisponible: aucun manifest")
-                return
-            manifest_path = Path(manifest_value)
-            if not manifest_path.exists():
-                set_status("Noter le batch indisponible: manifest introuvable")
-                return
-            try:
-                with manifest_path.open("r", encoding="utf-8") as f:
-                    data = json.load(f)
-                clips = data.get("clips", []) if isinstance(data, dict) else []
-                batch_id = str(data.get("batch_id", manifest_path.stem))
-            except Exception as exc:
-                set_status(f"Noter le batch indisponible: {exc}")
-                return
-
-            top = tk.Toplevel(root)
-            top.title("Noter le batch")
-            top.geometry("980x620")
-            top.configure(bg=colors["panel_alt"])
-            try:
-                top.lift()
-                top.focus_force()
-            except Exception:
-                pass
-
-            tk.Label(top, text=f"Batch: {batch_id}", bg=colors["panel_alt"], fg=colors["ink"], font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 2))
-            search_var = tk.StringVar(value="")
-            tk.Entry(top, textvariable=search_var, width=80, bd=2, relief="sunken").pack(anchor="w", padx=10, pady=(0, 8))
-
-            wrap = tk.Frame(top, bg=colors["panel_alt"])
-            wrap.pack(fill="both", expand=True, padx=10, pady=(0, 8))
-            canvas = tk.Canvas(wrap, bg=colors["panel_alt"], highlightthickness=0)
-            scroll = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
-            canvas.configure(yscrollcommand=scroll.set)
-            scroll.pack(side="right", fill="y")
-            canvas.pack(side="left", fill="both", expand=True)
-            rows = tk.Frame(canvas, bg=colors["panel_alt"])
-            rows_window = canvas.create_window((0, 0), window=rows, anchor="nw")
-
-            rows.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-            canvas.bind("<Configure>", lambda e: canvas.itemconfigure(rows_window, width=e.width))
-
-            ratings: dict[str, tk.IntVar] = {}
-            indexed_rows: list[tuple[Any, str]] = []
-
-            def draw_stars(parent: Any, rating_var: Any) -> None:
-                buttons: list[Any] = []
-
-                def refresh(v: int) -> None:
-                    for idx, btn in enumerate(buttons, start=1):
-                        btn.configure(text=("★" if idx <= v else "☆"))
-
-                def set_v(v: int) -> None:
-                    rating_var.set(v)
-                    refresh(v)
-
-                for i in range(1, 6):
-                    b = tk.Button(parent, text="☆", bg=colors["sun_soft"], fg=colors["ink"], bd=1, relief="raised", padx=2, pady=0, command=lambda x=i: set_v(x))
-                    b.pack(side="left", padx=1)
-                    buttons.append(b)
-                refresh(int(rating_var.get()))
-
-            for i, c in enumerate(clips):
-                clip_id = str(c.get("clip_id", f"clip_{i}"))
-                display_name = str(c.get("display_name", clip_id))
-                timeline_label = f"{batch_id}__{display_name}"
-                seed = str(c.get("seed_type", ""))
-                reason = str(c.get("reason", ""))
-                matched_terms = ""
-                for part in reason.split(";"):
-                    p = part.strip()
-                    if p.startswith("matched="):
-                        matched_terms = p.replace("matched=", "").strip()
-                        break
-                if not matched_terms and "transcript_discovery" in reason:
-                    matched_terms = "transcript"
-                row = tk.Frame(rows, bg=colors["panel_alt"], bd=1, relief="groove")
-                row.pack(fill="x", padx=2, pady=2)
-                tk.Label(row, text=timeline_label[:54], width=54, anchor="w", bg=colors["panel_alt"], fg=colors["ink"]).pack(side="left", padx=4)
-                tk.Label(row, text=seed, width=16, anchor="w", bg=colors["panel_alt"], fg=colors["ink"]).pack(side="left", padx=4)
-                tk.Label(row, text=(matched_terms or "-"), width=40, anchor="w", bg=colors["panel_alt"], fg=colors["ink"]).pack(side="left", padx=4)
-                rwrap = tk.Frame(row, bg=colors["panel_alt"])
-                rwrap.pack(side="right", padx=8)
-                ratings[clip_id] = tk.IntVar(value=3)
-                draw_stars(rwrap, ratings[clip_id])
-                indexed_rows.append((row, f"{timeline_label} {display_name} {clip_id} {seed} {reason} {matched_terms}".lower()))
-
-            def apply_filter(*_args: Any) -> None:
-                q = search_var.get().strip().lower()
-                for row, text_blob in indexed_rows:
-                    if not q or q in text_blob:
-                        row.pack(fill="x", padx=2, pady=2)
-                    else:
-                        row.pack_forget()
-
-            search_var.trace_add("write", apply_filter)
-
-            def save_feedback_and_learn() -> None:
-                try:
-                    root_dir = _repo_root()
-                    root_str = str(root_dir)
-                    if root_str not in sys.path:
-                        sys.path.insert(0, root_str)
-                    from short_editor.feedback import enrich_lexicon_from_ratings, save_batch_ratings
-
-                    rows_out: list[dict[str, str]] = []
-                    for c in clips:
-                        clip_id = str(c.get("clip_id", ""))
-                        rows_out.append(
-                            {
-                                "batch_id": batch_id,
-                                "clip_id": clip_id,
-                                "rating": str(int(ratings.get(clip_id).get() if clip_id in ratings else 3)),
-                                "seed_type": str(c.get("seed_type", "")),
-                                "reason": str(c.get("reason", "")),
-                                "start_seconds": str(c.get("start_seconds", "")),
-                                "end_seconds": str(c.get("end_seconds", "")),
-                                "notes": "",
-                            }
-                        )
-
-                    latest, history = save_batch_ratings(batch_id, rows_out, root_dir / "feedback")
-
-                    transcript_entries: list[dict] = []
-                    if clips:
-                        src = str(clips[0].get("source_path", ""))
-                        if src:
-                            t_path = root_dir / "output" / "transcripts" / f"{Path(src).stem}.json"
-                            if t_path.exists():
-                                with t_path.open("r", encoding="utf-8") as f:
-                                    tdata = json.load(f)
-                                transcript_entries = tdata.get("entries", []) if isinstance(tdata, dict) else []
-                    enrich_lexicon_from_ratings(root_dir / "config" / "transcript_lexicon_user.json", rows_out, transcript_entries)
-                    set_status(f"Feedback sauvegarde: {latest.name} | historique: {history.name}")
-                    top.destroy()
-                except Exception as exc:
-                    _log(f"rating_save_failed: {exc}")
-                    set_status(f"Erreur feedback: {exc}")
-
-            controls = tk.Frame(top, bg=colors["panel_alt"])
-            controls.pack(fill="x", padx=10, pady=(0, 10))
-            ui_button(controls, "Valider et apprendre", save_feedback_and_learn, primary=True).pack(side="right", padx=6)
-            ui_button(controls, "Fermer", top.destroy, primary=False).pack(side="right", padx=6)
+            _ui_feedback.open_rate_batch_window(
+                tk,
+                root,
+                colors,
+                ui_button,
+                session_ref.get("manifest"),
+                default_manifest,
+                _repo_root,
+                set_status,
+                _log,
+            )
 
         def save_overwrite() -> None:
             pid = preset_var.get().strip()
-            if not pid:
+            result = _preset_actions.save_overwrite_preset_data(
+                presets_data,
+                pid,
+                profile_var.get().strip(),
+                preset_from_editor,
+            )
+            if result.get("status") != "saved":
                 return
-            base = dict(presets.get(pid, {}))
-            if not base:
-                base = {"name": pid, "profile": profile_var.get().strip(), "mode": "single", "max_clip_seconds": 45}
-            presets[pid] = preset_from_editor(base)
-            presets_data["presets"] = presets
-            profiles.setdefault(profile_var.get().strip(), {})["active_preset"] = pid
             _save_presets(_repo_root(), presets_data)
             messagebox.showinfo("Short Editor", f"Preset enregistré: {pid}")
 
@@ -1792,25 +653,10 @@ def _ask_user_inputs(
             confirmed = messagebox.askyesno("Supprimer le preset", f"Supprimer définitivement le preset '{pid}' ?")
             if not confirmed:
                 return
-
-            deleted_profile = str(presets.get(pid, {}).get("profile", "")).strip()
-            del presets[pid]
-
-            replacement = ""
-            for cand_id, cand_data in presets.items():
-                if str(cand_data.get("profile", "")).strip() == deleted_profile:
-                    replacement = cand_id
-                    break
-            if not replacement:
-                replacement = next(iter(presets.keys()))
-
-            for profile_name, profile_data in profiles.items():
-                if profile_data.get("active_preset") == pid:
-                    profile_data["active_preset"] = replacement
-                if profile_name == deleted_profile and not profile_data.get("active_preset"):
-                    profile_data["active_preset"] = replacement
-
-            presets_data["presets"] = presets
+            result = _preset_actions.delete_preset_data(presets_data, pid)
+            if result.get("status") != "deleted":
+                return
+            replacement = str(result.get("replacement", ""))
             _save_presets(_repo_root(), presets_data)
             refresh_preset_menu()
             preset_var.set(replacement)
@@ -1819,16 +665,15 @@ def _ask_user_inputs(
 
         def apply_preset_now(scope_mode: str) -> None:
             pid = preset_var.get().strip()
-            selected_preset = dict((presets_data.get("presets", {}) or {}).get(pid, {}))
-            if not selected_preset:
-                set_status(f"Preset introuvable: {pid}")
-                return
-            ok, msg = _apply_preset_to_selected_clip(resolve, selected_preset, scope_mode=scope_mode)
+            deps = _timeline_actions.TimelineActionDeps(
+                safe_call=_safe_call,
+                log=_log,
+                get_item_at_current_frame=_get_item_at_current_frame,
+                get_first_item_on_track=_get_first_item_on_track,
+                apply_preset_to_selected_clip=_apply_preset_to_selected_clip,
+            )
+            ok, msg = _timeline_actions.apply_named_preset(resolve, presets_data, pid, scope_mode, deps)
             set_status(msg)
-            if ok:
-                _log(f"Apply preset success: preset={pid} scope={scope_mode}")
-            else:
-                _log(f"Apply preset failed: preset={pid} scope={scope_mode} msg={msg}")
 
         def apply_to_selected_clip_now() -> None:
             scope_mode = "selected_range" if apply_scope_var.get().strip() == "Plage sélectionnée" else "whole_clip"
@@ -1844,16 +689,15 @@ def _ask_user_inputs(
 
             def do_save() -> None:
                 nid = new_id_var.get().strip()
-                if not nid:
+                result = _preset_actions.save_new_preset_data(
+                    presets_data,
+                    preset_var.get().strip(),
+                    nid,
+                    profile_var.get().strip(),
+                    preset_from_editor,
+                )
+                if result.get("status") != "saved":
                     return
-                base = dict(presets.get(preset_var.get().strip(), {}))
-                if not base:
-                    base = {"name": nid, "profile": profile_var.get().strip(), "mode": "single", "max_clip_seconds": 45}
-                new_preset = preset_from_editor(base)
-                new_preset["name"] = nid
-                presets[nid] = new_preset
-                presets_data["presets"] = presets
-                profiles.setdefault(profile_var.get().strip(), {})["active_preset"] = nid
                 _save_presets(_repo_root(), presets_data)
                 preset_var.set(nid)
                 refresh_preset_menu()
@@ -1871,10 +715,7 @@ def _ask_user_inputs(
 
         status_text = tk.Text(root, width=72, height=1, bg=colors["sun_soft"], fg=colors["ink"], bd=3, relief="sunken", wrap="none", cursor="hand2", font=("Tahoma", 9, "bold"))
         status_text.grid(row=4, column=0, columnspan=3, sticky="e", padx=10, pady=(0, 12))
-        status_text.tag_configure("clickable_warning", foreground="#1D47C8", underline=1)
-        status_text.tag_bind("clickable_warning", "<Button-1>", lambda _e: open_warnings_window())
-        status_text.tag_bind("clickable_warning", "<Enter>", lambda _e: status_text.config(cursor="hand2"))
-        status_text.tag_bind("clickable_warning", "<Leave>", lambda _e: status_text.config(cursor="arrow"))
+        _ui_status.configure_status_text_bindings(status_text, open_warnings_window)
         set_status("Prêt")
 
         def toggle_editor() -> None:
@@ -1894,7 +735,6 @@ def _ask_user_inputs(
         def collect_params() -> dict[str, Any]:
             return {
                 "output": output_var.get().strip(),
-                "vod_dir": vod_dir_var.get().strip(),
                 "render_preset": render_var.get().strip() or "H264_Shorts_1080x1920_60fps",
                 "profile": profile_var.get().strip() or "valo",
                 "preset_id": preset_var.get().strip() or state["preset_id"],
@@ -1905,7 +745,6 @@ def _ask_user_inputs(
                 "strict_manifest": False,
                 "require_subtitles": False,
                 "preview_safe_quality": bool(preview_safe_quality_var.get()),
-                "generate_optimized_media_quality": True,
                 "subtitle_template_name": subtitle_template_var.get().strip() or SUBTITLE_TEMPLATE_AUTO_LABEL,
                 "subtitle_offset_ms": subtitle_offset_ms_var.get().strip() or "-500",
             }
@@ -1920,63 +759,26 @@ def _ask_user_inputs(
                 set_status("Génération du batch rapide, sans sous-titres...", warnings=[])
             root.update_idletasks()
 
-            progress_top = tk.Toplevel(root)
-            progress_top.title("Short Editor")
-            progress_top.geometry("420x120")
-            progress_top.configure(bg=colors["panel_alt"])
-            progress_top.transient(root)
-            progress_top.attributes("-topmost", True)
-            progress_top.grab_set()
-            progress_top.protocol("WM_DELETE_WINDOW", lambda: None)
-
-            progress_text = tk.StringVar(
-                value="Génération des sous-titres, cela peut prendre quelques minutes..."
-                if require_subtitles
-                else "Génération du batch..."
+            progress = _ui_progress.ModalProgress(
+                tk,
+                root,
+                colors,
+                "Short Editor",
+                "Génération des sous-titres, cela peut prendre quelques minutes..." if require_subtitles else "Génération du batch...",
+                show_stage=True,
+                show_percent=True,
+                show_bar=True,
             )
-            progress_stage = tk.StringVar(value="Batch")
-            progress_pct = tk.StringVar(value="0%")
-            tk.Label(
-                progress_top,
-                textvariable=progress_text,
-                bg=colors["panel_alt"],
-                fg=colors["ink"],
-                font=("Segoe UI", 10, "bold"),
-                wraplength=380,
-                justify="left",
-                padx=12,
-                pady=12,
-            ).pack(fill="both", expand=True)
-
-            tk.Label(
-                progress_top,
-                textvariable=progress_stage,
-                bg=colors["panel_alt"],
-                fg=colors["ink"],
-                font=("Segoe UI", 9, "bold"),
-                pady=2,
-            ).pack()
-            tk.Label(
-                progress_top,
-                textvariable=progress_pct,
-                bg=colors["panel_alt"],
-                fg=colors["ink"],
-                font=("Segoe UI", 9),
-                pady=0,
-            ).pack()
-            progress_bar = tk.Canvas(progress_top, width=360, height=16, bg=colors["panel_alt"], highlightthickness=0, bd=0)
-            progress_bar.pack(pady=(4, 10))
-            progress_bar.create_rectangle(2, 2, 358, 14, fill=colors["sun_soft"], outline=colors["ink"], width=1)
-            progress_fill = progress_bar.create_rectangle(3, 3, 3, 13, fill=colors["sun"], outline=colors["sun"], width=0)
 
             result_box: dict[str, Any] = {"result": None, "error": None}
-            progress_box: dict[str, Any] = {"stage": "Batch", "current": 0, "total": 1, "detail": "Initialisation"}
+            progress_box: dict[str, Any] = {"stage": "Batch", "current": 0, "total": 1, "detail": "Initialisation", "meta": {}}
 
-            def _worker_progress(stage: str, current: int, total: int, detail: str = "") -> None:
+            def _worker_progress(stage: str, current: int, total: int, detail: str = "", meta: dict[str, Any] | None = None) -> None:
                 progress_box["stage"] = stage or "Batch"
                 progress_box["current"] = max(0, int(current))
                 progress_box["total"] = max(1, int(total))
                 progress_box["detail"] = detail or ""
+                progress_box["meta"] = dict(meta or {})
 
             params["_progress_cb"] = _worker_progress
 
@@ -1993,32 +795,24 @@ def _ask_user_inputs(
             while worker.is_alive():
                 ticks += 1
                 if require_subtitles and ticks % 100 == 0:
-                    progress_text.set("Génération des sous-titres... toujours en cours, merci de patienter.")
+                    progress.set_text("Génération des sous-titres... toujours en cours, merci de patienter.")
                 stage = str(progress_box.get("stage", "Batch"))
                 current = int(progress_box.get("current", 0))
                 total = max(1, int(progress_box.get("total", 1)))
                 detail = str(progress_box.get("detail", "")).strip()
-                pct = max(0, min(100, int(round((current / total) * 100))))
-                progress_stage.set(f"Etape: {stage}")
-                progress_pct.set(f"{pct}% ({current}/{total})")
-                progress_text.set(detail or ("Génération en cours..." if not require_subtitles else "Génération + sous-titres en cours..."))
-                x2 = 3 + int((355 * pct) / 100)
-                progress_bar.coords(progress_fill, 3, 3, max(3, x2), 13)
-                try:
-                    progress_top.update_idletasks()
-                    progress_top.update()
-                except Exception:
-                    pass
+                meta = progress_box.get("meta", {}) if isinstance(progress_box.get("meta", {}), dict) else {}
+                progress.set_batch_progress(
+                    stage,
+                    current,
+                    total,
+                    detail or ("Génération en cours..." if not require_subtitles else "Génération + sous-titres en cours..."),
+                    processed_seconds=meta.get("processed_seconds"),
+                    total_seconds=meta.get("total_seconds"),
+                )
+                progress.pump()
                 time.sleep(0.03)
 
-            try:
-                progress_top.grab_release()
-            except Exception:
-                pass
-            try:
-                progress_top.destroy()
-            except Exception:
-                pass
+            progress.close()
 
             if result_box["error"] is not None:
                 err = result_box["error"]
@@ -2058,87 +852,34 @@ def _ask_user_inputs(
             set_status("Génération des sous-titres pour le clip sélectionné...", warnings=[])
             root.update_idletasks()
 
-            progress_top = tk.Toplevel(root)
-            progress_top.title("Short Editor")
-            progress_top.geometry("420x120")
-            progress_top.configure(bg=colors["panel_alt"])
-            progress_top.transient(root)
-            progress_top.attributes("-topmost", True)
-            progress_top.grab_set()
-            progress_top.protocol("WM_DELETE_WINDOW", lambda: None)
-            progress_text = tk.StringVar(value="Transcription de la source du clip sélectionné...")
-            tk.Label(
-                progress_top,
-                textvariable=progress_text,
-                bg=colors["panel_alt"],
-                fg=colors["ink"],
-                font=("Segoe UI", 10, "bold"),
-                wraplength=380,
-                justify="left",
-                padx=12,
-                pady=12,
-            ).pack(fill="both", expand=True)
+            progress = _ui_progress.ModalProgress(
+                tk,
+                root,
+                colors,
+                "Short Editor",
+                "Transcription de la source du clip sélectionné...",
+            )
 
             result_box: dict[str, Any] = {"result": None, "error": None}
 
             def _worker_single_sub() -> None:
                 try:
-                    root_dir = _repo_root()
-                    root_str = str(root_dir)
-                    if root_str not in sys.path:
-                        sys.path.insert(0, root_str)
-                    from short_editor.subtitles import generate_srt_for_clip
-                    from short_editor.transcription import ensure_transcript
-
-                    ok_ctx, ctx_msg, ctx = _selected_clip_subtitle_context(resolve)
-                    if not ok_ctx:
-                        result_box["result"] = {"ok": False, "message": ctx_msg}
-                        return
-                    source_path = Path(str(ctx["source_path"]))
-                    clip_start = float(ctx["clip_start"])
-                    clip_end = float(ctx["clip_end"])
-                    timeline = ctx["timeline"]
-                    media_pool = ctx["media_pool"]
-                    timeline_name = str(ctx["timeline_name"])
-                    item_name = str(ctx["item_name"])
-
-                    subtitle_preset = selected_subtitle_preset()
-                    cfg = _merge_subtitle_preset_into_config(_load_pipeline_config(root_dir), subtitle_preset)
-                    transcript_path = ensure_transcript(source_path, cfg, root_dir / "output" / "transcripts")
-                    subtitle_dir = root_dir / "output" / "subtitles" / "manual"
-                    out_name = _safe_name_token(item_name or timeline_name, limit=120)
-                    out_srt = subtitle_dir / f"{out_name}.srt"
-                    ok_srt = generate_srt_for_clip(transcript_path, clip_start, clip_end, out_srt, cfg.get("captions", {}))
-                    if not ok_srt:
-                        result_box["result"] = {"ok": False, "message": "Aucun contenu de sous-titres trouvé pour la plage du clip sélectionné."}
-                        return
-
-                    try:
-                        offset_ms_value = int(float(str(subtitle_offset_ms_var.get()).strip() or "-500"))
-                    except Exception:
-                        offset_ms_value = -500
-                    ok_import, import_msg = _import_subtitles_to_timeline(
-                        project=ctx["project"],
-                        media_pool=media_pool,
-                        timeline=timeline,
-                        subtitle_path=out_srt,
-                        template_name=str(subtitle_template_var.get().strip() or SUBTITLE_TEMPLATE_AUTO_LABEL),
-                        offset_ms=offset_ms_value,
-                        subtitle_style=_subtitle_style_from_preset(subtitle_preset),
-                        timing_segments=list(ctx.get("subtitle_timing_segments", []) or []),
-                        subtitle_source_start=float(ctx.get("subtitle_source_start", clip_start)),
+                    deps = _clip_subtitles.ClipSubtitleDeps(
+                        selected_clip_subtitle_context=_selected_clip_subtitle_context,
+                        load_pipeline_config=_load_pipeline_config,
+                        merge_subtitle_preset_into_config=_merge_subtitle_preset_into_config,
+                        subtitle_style_from_preset=_subtitle_style_from_preset,
+                        import_subtitles_to_timeline=_import_subtitles_to_timeline,
                     )
-                    if not ok_import:
-                        result_box["result"] = {
-                            "ok": False,
-                            "message": "Mode strict: impossible d'appliquer le sous-titre Text+ autonome.",
-                            "warnings": [f"SRT généré sur disque: {out_srt}", f"Erreur d'import: {import_msg}"],
-                        }
-                        return
-                    result_box["result"] = {
-                        "ok": True,
-                        "message": f"Sous-titre appliqué sur la timeline (strict): {out_srt.name}",
-                    }
+                    result_box["result"] = _clip_subtitles.add_subtitles_to_selected_clip(
+                        _repo_root(),
+                        resolve,
+                        selected_subtitle_preset(),
+                        str(subtitle_template_var.get().strip() or SUBTITLE_TEMPLATE_AUTO_LABEL),
+                        subtitle_offset_ms_var.get(),
+                        deps,
+                        SUBTITLE_TEMPLATE_AUTO_LABEL,
+                    )
                 except Exception as exc:
                     result_box["error"] = exc
 
@@ -2148,22 +889,11 @@ def _ask_user_inputs(
             while worker.is_alive():
                 ticks += 1
                 if ticks % 100 == 0:
-                    progress_text.set("Traitement des sous-titres du clip sélectionné toujours en cours...")
-                try:
-                    progress_top.update_idletasks()
-                    progress_top.update()
-                except Exception:
-                    pass
+                    progress.set_text("Traitement des sous-titres du clip sélectionné toujours en cours...")
+                progress.pump()
                 time.sleep(0.03)
 
-            try:
-                progress_top.grab_release()
-            except Exception:
-                pass
-            try:
-                progress_top.destroy()
-            except Exception:
-                pass
+            progress.close()
 
             if result_box["error"] is not None:
                 err = result_box["error"]
@@ -2185,40 +915,18 @@ def _ask_user_inputs(
             set_status(f"Analyse des silences: {scope}...", warnings=[])
             root.update_idletasks()
 
-            progress_top = tk.Toplevel(root)
-            progress_top.title("Couper les silences")
-            progress_top.geometry("460x130")
-            progress_top.configure(bg=colors["panel_alt"])
-            progress_top.transient(root)
-            progress_top.attributes("-topmost", True)
-            progress_top.grab_set()
-            progress_top.protocol("WM_DELETE_WINDOW", lambda: None)
-            progress_text = tk.StringVar(value="Analyse audio en cours...")
-            progress_detail = tk.StringVar(value="Préparation")
-            tk.Label(
-                progress_top,
-                textvariable=progress_text,
-                bg=colors["panel_alt"],
-                fg=colors["ink"],
-                font=("Verdana", 10, "bold"),
-                wraplength=420,
-                justify="left",
-                padx=12,
-                pady=10,
-            ).pack(fill="x")
-            tk.Label(
-                progress_top,
-                textvariable=progress_detail,
-                bg=colors["panel_alt"],
-                fg=colors["ink"],
-                font=("Tahoma", 9, "bold"),
-                padx=12,
-                pady=2,
-            ).pack(fill="x")
-            progress_bar = tk.Canvas(progress_top, width=390, height=16, bg=colors["panel_alt"], highlightthickness=0, bd=0)
-            progress_bar.pack(pady=(6, 10))
-            progress_bar.create_rectangle(2, 2, 388, 14, fill=colors["sun_soft"], outline=colors["ink"], width=1)
-            progress_fill = progress_bar.create_rectangle(3, 3, 3, 13, fill=colors["accent_soft"], outline=colors["accent_soft"], width=0)
+            progress = _ui_progress.ModalProgress(
+                tk,
+                root,
+                colors,
+                "Couper les silences",
+                "Analyse audio en cours...",
+                geometry="460x130",
+                show_stage=True,
+                show_bar=True,
+                bar_width=390,
+                fill_color_key="accent_soft",
+            )
 
             result_box: dict[str, Any] = {"result": None, "error": None}
             progress_box: dict[str, Any] = {"current": 0, "total": 1, "detail": "Initialisation"}
@@ -2230,120 +938,43 @@ def _ask_user_inputs(
 
             def _worker_cut() -> None:
                 try:
-                    result_box["result"] = _run_silence_cut(scope, _set_progress)
+                    deps = _silence_actions.SilenceActionDeps(
+                        safe_call=_safe_call,
+                        log=_log,
+                        load_pipeline_config=_load_pipeline_config,
+                        selected_clip_subtitle_context=_selected_clip_subtitle_context,
+                        load_audio_energy_for_silence_cut=_load_audio_energy_for_silence_cut,
+                        detect_audible_segments_for_silence_cut=_detect_audible_segments_for_silence_cut,
+                        create_silence_cut_timeline=_create_silence_cut_timeline,
+                        parse_manifest=_parse_manifest,
+                        suffix_timeline_name=_suffix_timeline_name,
+                        find_timeline_by_name=_find_timeline_by_name,
+                    )
+                    result_box["result"] = _silence_actions.run_silence_cut(
+                        _repo_root(),
+                        resolve,
+                        scope,
+                        preset_var.get().strip(),
+                        presets_data,
+                        session_ref,
+                        default_manifest,
+                        deps,
+                        _set_progress,
+                    )
                 except Exception as exc:
                     result_box["error"] = exc
-
-            def _run_silence_cut(selected_scope: str, progress_cb: Any) -> dict[str, Any]:
-                root_dir = _repo_root()
-                cfg = _load_pipeline_config(root_dir)
-                energy_cache: dict[str, tuple[list[tuple[float, float]], str]] = {}
-                warnings_out: list[str] = []
-                total_cuts = 0
-                total_removed = 0.0
-                timelines_created = 0
-
-                pm = _safe_call(resolve, "GetProjectManager")
-                project = _safe_call(pm, "GetCurrentProject") if pm else None
-                if not project:
-                    return {"ok": False, "message": "Aucun projet Resolve ouvert.", "warnings": []}
-                media_pool = _safe_call(project, "GetMediaPool")
-                if not media_pool:
-                    return {"ok": False, "message": "Media Pool indisponible.", "warnings": []}
-                selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_var.get().strip(), {}))
-                if not selected_preset:
-                    return {"ok": False, "message": f"Preset introuvable: {preset_var.get().strip()}", "warnings": []}
-
-                def _process_one(source_path: Path, start_s: float, end_s: float, base_name: str, idx: int, total: int) -> None:
-                    nonlocal total_cuts, total_removed, timelines_created
-                    progress_cb(idx, total, f"Analyse audio: {base_name}")
-                    energies, audio_label, audio_warnings = _load_audio_energy_for_silence_cut(root_dir, source_path, cfg, energy_cache)
-                    warnings_out.extend(audio_warnings)
-                    if not energies:
-                        warnings_out.append(f"{base_name}: analyse audio vide, clip inchangé.")
-                        return
-                    segments, stats = _detect_audible_segments_for_silence_cut(energies, start_s, end_s, cfg)
-                    cuts = int(stats.get("cuts", 0.0))
-                    removed = float(stats.get("removed_seconds", 0.0))
-                    if cuts <= 0 or removed <= 0.05:
-                        warnings_out.append(f"{base_name}: aucun silence gênant détecté ({audio_label}).")
-                        return
-                    timeline_name = _suffix_timeline_name(base_name)
-                    progress_cb(idx, total, f"Création timeline: {timeline_name}")
-                    tl, create_warnings = _create_silence_cut_timeline(root_dir, project, media_pool, source_path, timeline_name, segments, selected_preset)
-                    warnings_out.extend(create_warnings)
-                    if tl is None:
-                        warnings_out.append(f"{base_name}: création timeline silence_cut échouée.")
-                        return
-                    timelines_created += 1
-                    total_cuts += cuts
-                    total_removed += removed
-                    _log(f"silence_cut_created name={timeline_name} cuts={cuts} removed={removed:.3f}s segments={len(segments)} audio={audio_label}")
-
-                if selected_scope == "Clip sélectionné":
-                    ok_ctx, ctx_msg, ctx = _selected_clip_subtitle_context(resolve)
-                    if not ok_ctx:
-                        return {"ok": False, "message": ctx_msg, "warnings": []}
-                    source_path = Path(str(ctx.get("source_path", "")))
-                    if not source_path.exists():
-                        return {"ok": False, "message": f"Source introuvable: {source_path}", "warnings": []}
-                    item_name = str(ctx.get("item_name") or ctx.get("timeline_name") or source_path.stem)
-                    _process_one(source_path, float(ctx["clip_start"]), float(ctx["clip_end"]), item_name, 1, 1)
-                else:
-                    manifest_value = session_ref.get("manifest") or default_manifest
-                    if not manifest_value:
-                        return {"ok": False, "message": "Aucun manifest disponible. Génère d'abord un batch.", "warnings": []}
-                    manifest_path = Path(manifest_value)
-                    if not manifest_path.exists():
-                        return {"ok": False, "message": f"Manifest introuvable: {manifest_path}", "warnings": []}
-                    batch_id, plans = _parse_manifest(manifest_path)
-                    if not plans:
-                        return {"ok": False, "message": "Aucun clip valide dans le manifest.", "warnings": []}
-                    detected_vod = session_ref.get("detected_vod")
-                    for idx, plan in enumerate(plans, start=1):
-                        raw_src = Path(plan.source_path)
-                        source_path = raw_src if raw_src.is_absolute() else (root_dir / raw_src).resolve()
-                        if not source_path.exists() and detected_vod is not None and Path(detected_vod).exists():
-                            source_path = Path(detected_vod)
-                        if not source_path.exists():
-                            warnings_out.append(f"{plan.display_name}: source introuvable, skip.")
-                            continue
-                        base_name = plan.timeline_name or f"{batch_id}__{plan.display_name or plan.clip_id}"
-                        _process_one(source_path, float(plan.start_seconds), float(plan.end_seconds), base_name, idx, len(plans))
-
-                if timelines_created == 0:
-                    return {"ok": False, "message": "Aucune timeline silence_cut créée.", "warnings": warnings_out}
-                warnings_out.append("Sous-titres: régénère-les après coupe si la timeline originale en avait.")
-                return {
-                    "ok": True,
-                    "message": f"Coupe des silences terminée: {timelines_created} timeline(s), {total_cuts} cut(s), {total_removed:.1f}s supprimée(s).",
-                    "warnings": warnings_out,
-                }
 
             worker = threading.Thread(target=_worker_cut, daemon=True)
             worker.start()
             while worker.is_alive():
                 cur = int(progress_box.get("current", 0))
                 total = max(1, int(progress_box.get("total", 1)))
-                pct = max(0, min(100, int(round((cur / total) * 100))))
-                progress_text.set("Coupe automatique des silences en cours...")
-                progress_detail.set(str(progress_box.get("detail", "Analyse")))
-                progress_bar.coords(progress_fill, 3, 3, 3 + int((385 * pct) / 100), 13)
-                try:
-                    progress_top.update_idletasks()
-                    progress_top.update()
-                except Exception:
-                    pass
+                detail = str(progress_box.get("detail", "Analyse"))
+                progress.set_batch_progress(detail, cur, total, "Coupe automatique des silences en cours...")
+                progress.pump()
                 time.sleep(0.03)
 
-            try:
-                progress_top.grab_release()
-            except Exception:
-                pass
-            try:
-                progress_top.destroy()
-            except Exception:
-                pass
+            progress.close()
 
             if result_box["error"] is not None:
                 err = result_box["error"]
@@ -2359,108 +990,36 @@ def _ask_user_inputs(
             scope = silence_scope_var.get().strip() or "Clip sélectionné"
             set_status(f"Annulation des cuts de silences: {scope}...", warnings=[])
 
-            pm = _safe_call(resolve, "GetProjectManager")
-            project = _safe_call(pm, "GetCurrentProject") if pm else None
-            if not project:
-                set_status("Aucun projet Resolve ouvert.", warnings=[])
-                return
-            media_pool = _safe_call(project, "GetMediaPool")
-            if not media_pool:
-                set_status("Media Pool indisponible.", warnings=[])
-                return
+            def _confirm_delete(count: int) -> bool:
+                try:
+                    return bool(
+                        messagebox.askyesno(
+                            "Annuler les cuts de silences",
+                            f"Supprimer {count} timeline(s) __silence_cut ?\n\n"
+                            "Les timelines originales ne seront pas modifiées.",
+                            parent=root,
+                        )
+                    )
+                except Exception:
+                    return True
 
-            warnings_out: list[str] = []
-            originals: list[str] = []
-            targets: list[str] = []
-
-            def _add_target(name: str, original: str = "") -> None:
-                clean_name = str(name or "").strip()
-                if not clean_name or clean_name in targets:
-                    return
-                targets.append(clean_name)
-                if original and original not in originals:
-                    originals.append(original)
-
-            if scope == "Clip sélectionné":
-                current_timeline = _safe_call(project, "GetCurrentTimeline")
-                current_name = str(_safe_call(current_timeline, "GetName", default="") or "") if current_timeline else ""
-                if current_name.endswith("__silence_cut"):
-                    _add_target(current_name, current_name[: -len("__silence_cut")])
-
-                ok_ctx, ctx_msg, ctx = _selected_clip_subtitle_context(resolve)
-                if ok_ctx:
-                    base_name = str(ctx.get("item_name") or ctx.get("timeline_name") or "").strip()
-                    if base_name:
-                        _add_target(_suffix_timeline_name(base_name), base_name)
-                elif not targets:
-                    set_status(ctx_msg, warnings=[])
-                    return
-            else:
-                manifest_value = session_ref.get("manifest") or default_manifest
-                if not manifest_value:
-                    set_status("Aucun manifest disponible. Génère d'abord un batch.", warnings=[])
-                    return
-                manifest_path = Path(manifest_value)
-                if not manifest_path.exists():
-                    set_status(f"Manifest introuvable: {manifest_path}", warnings=[])
-                    return
-                batch_id, plans = _parse_manifest(manifest_path)
-                if not plans:
-                    set_status("Aucun clip valide dans le manifest.", warnings=[])
-                    return
-                for plan in plans:
-                    base_name = plan.timeline_name or f"{batch_id}__{plan.display_name or plan.clip_id}"
-                    _add_target(_suffix_timeline_name(base_name), base_name)
-
-            existing_targets: list[tuple[str, Any]] = []
-            for timeline_name in targets:
-                timeline = _find_timeline_by_name(project, timeline_name)
-                if timeline:
-                    existing_targets.append((timeline_name, timeline))
-                else:
-                    warnings_out.append(f"Timeline silence_cut introuvable: {timeline_name}")
-
-            if not existing_targets:
-                set_status("Aucune timeline silence_cut à supprimer.", warnings=warnings_out)
-                return
-
-            try:
-                confirmed = messagebox.askyesno(
-                    "Annuler les cuts de silences",
-                    f"Supprimer {len(existing_targets)} timeline(s) __silence_cut ?\n\n"
-                    "Les timelines originales ne seront pas modifiées.",
-                    parent=root,
-                )
-            except Exception:
-                confirmed = True
-            if not confirmed:
-                set_status("Annulation des cuts de silences annulée.", warnings=[])
-                return
-
-            deleted = 0
-            for timeline_name, timeline in existing_targets:
-                ok = _safe_call(media_pool, "DeleteTimelines", [timeline], default=False)
-                if not ok:
-                    ok = _safe_call(project, "DeleteTimeline", timeline, default=False)
-                if ok:
-                    deleted += 1
-                    _log(f"silence_cut_deleted name={timeline_name}")
-                else:
-                    warnings_out.append(f"Suppression impossible: {timeline_name}")
-
-            for original_name in originals:
-                original_timeline = _find_timeline_by_name(project, original_name)
-                if original_timeline:
-                    _safe_call(project, "SetCurrentTimeline", original_timeline)
-                    _safe_call(media_pool, "SetCurrentTimeline", original_timeline)
-                    break
-
-            if deleted <= 0:
-                set_status("Aucune timeline silence_cut supprimée.", warnings=warnings_out)
-                return
-            msg = f"Cuts annulés: {deleted} timeline(s) silence_cut supprimée(s)."
-            set_status(msg, warnings=warnings_out)
-            play_notification_sound()
+            deps = _silence_actions.SilenceActionDeps(
+                safe_call=_safe_call,
+                log=_log,
+                load_pipeline_config=_load_pipeline_config,
+                selected_clip_subtitle_context=_selected_clip_subtitle_context,
+                load_audio_energy_for_silence_cut=_load_audio_energy_for_silence_cut,
+                detect_audible_segments_for_silence_cut=_detect_audible_segments_for_silence_cut,
+                create_silence_cut_timeline=_create_silence_cut_timeline,
+                parse_manifest=_parse_manifest,
+                suffix_timeline_name=_suffix_timeline_name,
+                find_timeline_by_name=_find_timeline_by_name,
+            )
+            result = _silence_actions.undo_silence_cuts(resolve, scope, session_ref, default_manifest, deps, _confirm_delete)
+            msg = str(result.get("message", "Annulation des cuts terminée."))
+            set_status(msg, warnings=list(result.get("warnings", []) or []))
+            if result.get("ok"):
+                play_notification_sound()
 
         batch_footer = tk.Frame(batch_tab, bg=colors["sky"], bd=0)
         batch_footer.grid(row=2, column=0, columnspan=3, sticky="e", padx=10, pady=(2, 12))
@@ -2584,18 +1143,11 @@ def _ask_user_inputs(
 
 
 def _safe_int_from_project_setting(project: Any, key: str, fallback: int) -> int:
-    value = project.GetSetting(key)
-    try:
-        return int(float(value))
-    except Exception:
-        return fallback
+    return _project_settings.safe_int_from_project_setting(project, key, fallback)
 
 
 def _fps_from_project(project: Any) -> int:
-    fps = _safe_int_from_project_setting(project, "timelineFrameRate", DEFAULT_FPS)
-    if fps <= 0:
-        return DEFAULT_FPS
-    return fps
+    return _project_settings.fps_from_project(project, DEFAULT_FPS)
 
 
 def _parse_fps_text(value: Any) -> float | None:
@@ -2672,26 +1224,8 @@ def _source_fps_for_media_item(media_item: Any, source_path: Path, fallback_fps:
     return float(fallback_fps)
 
 
-@dataclass
-class ClipPlan:
-    clip_id: str
-    display_name: str
-    timeline_name: str
-    source_path: str
-    start_seconds: float
-    end_seconds: float
-    seed_type: str
-    subtitle_path: str = ""
-
-
 def _overlap_ratio_from_ranges(a_start: float, a_end: float, b_start: float, b_end: float) -> float:
-    left = max(a_start, b_start)
-    right = min(a_end, b_end)
-    if right <= left:
-        return 0.0
-    inter = right - left
-    shortest = max(0.001, min(a_end - a_start, b_end - b_start))
-    return inter / shortest
+    return overlap_ratio_from_ranges(a_start, a_end, b_start, b_end)
 
 
 def _ranges_too_close(
@@ -2702,99 +1236,14 @@ def _ranges_too_close(
     overlap_threshold: float = 0.35,
     min_center_distance_seconds: float = 60.0,
 ) -> bool:
-    if _overlap_ratio_from_ranges(a_start, a_end, b_start, b_end) > overlap_threshold:
-        return True
-    a_center = a_start + ((a_end - a_start) / 2.0)
-    b_center = b_start + ((b_end - b_start) / 2.0)
-    return abs(a_center - b_center) < min_center_distance_seconds
-
-
-def _assign_simple_display_names_dict(clips: list[dict[str, Any]]) -> None:
-    chapter_idx = 1
-    auto_idx = 1
-    for c in clips:
-        if str(c.get("seed_type", "")) == "chapter":
-            c["display_name"] = f"Chapitre {chapter_idx}"
-            chapter_idx += 1
-        else:
-            c["display_name"] = f"Auto {auto_idx}"
-            auto_idx += 1
-
-
-def _assign_timeline_names_dict(clips: list[dict[str, Any]], batch_id: str) -> None:
-    used_timeline_names: set[str] = set()
-    for c in clips:
-        display = _safe_name_token(str(c.get("display_name") or c.get("clip_id") or "clip"), limit=84)
-        timeline_name = f"{batch_id}__{display}"
-        if timeline_name in used_timeline_names:
-            dup_idx = 2
-            base_name = timeline_name
-            while f"{base_name} ({dup_idx})" in used_timeline_names:
-                dup_idx += 1
-            timeline_name = f"{base_name} ({dup_idx})"
-        used_timeline_names.add(timeline_name)
-        c["timeline_name"] = timeline_name
-
-
-def _select_non_overlapping_fallback(existing: list[dict[str, float]], candidates: list[dict[str, float]], needed: int) -> list[dict[str, float]]:
-    if needed <= 0:
-        return []
-    selected: list[dict[str, float]] = []
-    for c in candidates:
-        c_start = float(c["start_seconds"])
-        c_end = float(c["end_seconds"])
-        too_close = any(
-            _ranges_too_close(c_start, c_end, float(e["start_seconds"]), float(e["end_seconds"]))
-            for e in existing
-        )
-        too_close = too_close or any(
-            _ranges_too_close(c_start, c_end, float(s["start_seconds"]), float(s["end_seconds"]))
-            for s in selected
-        )
-        if too_close:
-            continue
-        selected.append(c)
-        if len(selected) >= needed:
-            break
-    return selected
-
-
-def _dedupe_fallback_clip_dicts(clips: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
-    kept: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    for clip in clips:
-        seed_type = str(clip.get("seed_type", ""))
-        if seed_type == "chapter":
-            kept.append(clip)
-            continue
-
-        try:
-            start = float(clip.get("start_seconds", 0.0))
-            end = float(clip.get("end_seconds", 0.0))
-        except Exception:
-            kept.append(clip)
-            continue
-
-        duplicate_of = None
-        for existing in kept:
-            if str(existing.get("source_path", "")) != str(clip.get("source_path", "")):
-                continue
-            try:
-                ex_start = float(existing.get("start_seconds", 0.0))
-                ex_end = float(existing.get("end_seconds", 0.0))
-            except Exception:
-                continue
-            if _ranges_too_close(start, end, ex_start, ex_end):
-                duplicate_of = existing
-                break
-
-        if duplicate_of is not None:
-            name = str(clip.get("clip_id") or clip.get("display_name") or "fallback")
-            kept_name = str(duplicate_of.get("clip_id") or duplicate_of.get("display_name") or "clip")
-            warnings.append(f"{name}: skipped fallback too close to {kept_name}")
-            continue
-        kept.append(clip)
-    return kept, warnings
+    return ranges_too_close(
+        a_start,
+        a_end,
+        b_start,
+        b_end,
+        overlap_threshold=overlap_threshold,
+        min_center_distance_seconds=min_center_distance_seconds,
+    )
 
 
 def _auto_detect_vod_path(resolve: Any, root: Path) -> Path | None:
@@ -2803,7 +1252,7 @@ def _auto_detect_vod_path(resolve: Any, root: Path) -> Path | None:
     if not project:
         return None
 
-    # Strategy 1: current timeline video item
+    # Strategy 1: current timeline video item (playhead sur un clip)
     timeline = _safe_call(project, "GetCurrentTimeline")
     if timeline:
         item = _safe_call(timeline, "GetCurrentVideoItem")
@@ -2813,10 +1262,11 @@ def _auto_detect_vod_path(resolve: Any, root: Path) -> Path | None:
                 _log(f"Auto VOD detect: current timeline clip {fp}")
                 return Path(fp)
 
-    # Strategy 2: selected clips in current media folder (if API available)
     media_pool = _safe_call(project, "GetMediaPool")
+
+    # Strategy 2: GetSelectedClips (API variable selon version Resolve)
     if media_pool:
-        selected = _safe_call(media_pool, "GetSelectedClips", default=[])
+        selected = _safe_call(media_pool, "GetSelectedClips", default=[]) or []
         if selected:
             first = selected[0]
             props = _safe_call(first, "GetClipProperty", default={}) or {}
@@ -2825,11 +1275,35 @@ def _auto_detect_vod_path(resolve: Any, root: Path) -> Path | None:
                 _log(f"Auto VOD detect: selected media clip {fp}")
                 return Path(fp)
 
-    # Strategy 3: if exactly one input VOD exists, use it
-    inputs = sorted((root / "input").glob("*.mp4"))
-    if len(inputs) == 1:
-        _log(f"Auto VOD detect: single input file {inputs[0]}")
-        return inputs[0]
+    # Strategy 3: clips dans le dossier courant du Media Pool
+    if media_pool:
+        current_folder = _safe_call(media_pool, "GetCurrentFolder", default=None)
+        if current_folder:
+            clips = _safe_call(current_folder, "GetClipList", default=[]) or []
+            for clip in clips:
+                props = _safe_call(clip, "GetClipProperty", default={}) or {}
+                fp = str(props.get("File Path") or "")
+                if fp and fp.lower().endswith(".mp4") and Path(fp).exists():
+                    _log(f"Auto VOD detect: current folder clip {fp}")
+                    return Path(fp)
+
+    # Strategy 4: manifest le plus récent (meta.source_vod_path ou source_vods)
+    manifests_dir = root / "output" / "manifests"
+    if manifests_dir.exists():
+        manifests = sorted(manifests_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for manifest_path in manifests[:5]:
+            try:
+                data = _read_manifest_safe(manifest_path) or {}
+                fp = str((data.get("meta") or {}).get("source_vod_path") or "")
+                if not fp:
+                    vods = data.get("source_vods") or []
+                    fp = str(vods[0]) if vods else ""
+                if fp and Path(fp).exists():
+                    _log(f"Auto VOD detect: from manifest {manifest_path.name} path={fp}")
+                    return Path(fp)
+            except Exception:
+                continue
+
     return None
 
 
@@ -2886,6 +1360,67 @@ def _ask_reopen_existing_batch(manifest_path: Path, parent: Any | None = None) -
         return False
 
 
+def _ensure_clean_vod(root: Path, vod_path: Path, cfg: dict[str, Any], progress_cb: Any = None) -> Path | None:
+    """Ensure a clean VOD (single mixed audio track, no Spotify) exists in work/.
+
+    Returns the clean VOD path on success, None on failure.
+    Called both during manifest generation (pre-compute) and during Resolve build (fallback).
+    """
+    from short_editor.audio_analysis import (
+        count_audio_streams as _count_audio_streams,
+        create_clean_vod as _create_clean_vod,
+        create_mixed_vod as _create_mixed_vod,
+        vod_has_audio as _vod_has_audio,
+    )
+    _audio_base_track = int(cfg.get("audio", {}).get("render", {}).get("base_track", 6))
+    _clean_vod = root / "work" / f"{vod_path.stem}_track{_audio_base_track}{vod_path.suffix}"
+    _clean_vod.parent.mkdir(parents=True, exist_ok=True)
+
+    if _clean_vod.exists() and not _vod_has_audio(_clean_vod):
+        _log(f"Clean VOD has no audio, removing stale file: {_clean_vod.name}")
+        _clean_vod.unlink(missing_ok=True)
+
+    if _clean_vod.exists():
+        _log(f"Clean VOD already exists with audio: {_clean_vod.name}")
+        return _clean_vod
+
+    _num_audio = _count_audio_streams(str(vod_path))
+    _log(f"Source VOD audio stream count: {_num_audio}")
+    if _num_audio == 0:
+        _log("Source VOD has no audio streams, skipping clean VOD creation")
+        return None
+
+    def _make_on_progress(label: str) -> Any:
+        if not callable(progress_cb):
+            return None
+        def _cb(pct: int) -> None:
+            progress_cb("Préparation audio", pct, 100, f"{label}: {pct}%")
+        return _cb
+
+    if _audio_base_track <= _num_audio:
+        _label = f"Copie piste {_audio_base_track}"
+        _log(f"Creating clean VOD (track {_audio_base_track} copy) → {_clean_vod.name}")
+        if callable(progress_cb):
+            progress_cb("Préparation audio", 0, 100, f"{_label}…")
+        ok = _create_clean_vod(str(vod_path), _clean_vod, _audio_base_track, _make_on_progress(_label))
+        _log(f"Clean VOD stream-copy ok={ok}")
+    else:
+        _always_muted = set(cfg.get("audio", {}).get("always_muted_tracks", [1, 4]))
+        _mix_obs_tracks = [t for t in range(1, _num_audio + 1) if t not in _always_muted]
+        _mix_indices = [t - 1 for t in _mix_obs_tracks]
+        _label = f"Mix pistes {_mix_obs_tracks}"
+        _log(
+            f"Track {_audio_base_track} not in source (only {_num_audio} streams). "
+            f"Mixing OBS tracks {_mix_obs_tracks} (excluding muted {sorted(_always_muted)}) → {_clean_vod.name}"
+        )
+        if callable(progress_cb):
+            progress_cb("Préparation audio", 0, 100, f"{_label}…")
+        ok = _create_mixed_vod(str(vod_path), _clean_vod, _mix_indices, _make_on_progress(_label))
+        _log(f"Clean VOD mix ok={ok}")
+
+    return _clean_vod if ok else None
+
+
 def _generate_manifest_for_vod(
     root: Path,
     vod_path: Path,
@@ -2896,442 +1431,76 @@ def _generate_manifest_for_vod(
     subtitle_preset_id: str = "",
     subtitle_preset: dict[str, Any] | None = None,
 ) -> Path:
-    # Resolve scripts run from external script folders; ensure project root is importable.
-    root_str = str(root)
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
-
-    from short_editor.clip_builder import (
-        build_chapter_candidates_with_skips,
-        compute_quota,
-        discover_fallback_candidates,
-        trim_dead_air_on_boundaries,
-        tag_overflow,
-    )
-    from short_editor.ingest import probe_vod
-    from short_editor.models import ClipCandidate
-    from short_editor.subtitles import generate_srt_for_clip
-    from short_editor.transcription import ensure_transcript
-
     cfg = _merge_subtitle_preset_into_config(_load_pipeline_config(root), subtitle_preset)
-    manifest = probe_vod(vod_path)
-    if callable(progress_cb):
-        progress_cb("Batch+Subtitles", 5, 100, "Analyse du VOD")
-    transcript_path_cached = _transcript_path_for_vod(root, vod_path)
-    transcript_exists = transcript_path_cached.exists()
-
-    if use_transcript_for_selection:
-        try:
-            if transcript_exists:
-                _log(f"transcript_selection_cache_hit vod={vod_path} transcript={transcript_path_cached}")
-            else:
-                ensure_transcript(vod_path, cfg, root / "output" / "transcripts")
-                _log(f"transcript_selection_enabled vod={vod_path}")
-        except Exception as exc:
-            _log(f"transcript_selection_failed vod={vod_path} err={exc}")
-
-    chapter_clips, chapter_skips = build_chapter_candidates_with_skips(manifest, cfg)
-    manifest_warnings = [f"{vod_path.name}: {msg}" for msg in chapter_skips]
-
-    _, target_quota, max_quota = compute_quota(manifest.duration_seconds, cfg["quota"])
-    selected: list[dict[str, Any]] = []
-    for c in chapter_clips:
-        selected.append(c.to_dict())
-
-    if len(selected) < target_quota:
-        fallback = [c.to_dict() for c in discover_fallback_candidates(manifest, cfg, root / "work")]
-        needed = max(0, target_quota - len(selected))
-        selected.extend(_select_non_overlapping_fallback(selected, fallback, needed))
-    if callable(progress_cb):
-        progress_cb("Batch+Subtitles", 20, 100, "Selection des clips terminee")
-
-    batch_id = f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    clip_objs = []
-    for i, c in enumerate(selected):
-        c["clip_id"] = f"{vod_path.stem}__{c['clip_id']}"
-        c["overflow"] = i >= max_quota
-        c["subtitle_path"] = ""
-        clip_objs.append(c)
-
-    trim_candidates: list[ClipCandidate] = []
-    for c in clip_objs:
-        trim_candidates.append(
-            ClipCandidate(
-                clip_id=str(c.get("clip_id", "")),
-                display_name=str(c.get("display_name", "")),
-                source_path=str(c.get("source_path", manifest.source_path)),
-                start_seconds=float(c.get("start_seconds", 0.0)),
-                end_seconds=float(c.get("end_seconds", 0.0)),
-                mandatory=bool(c.get("mandatory", False)),
-                seed_type=str(c.get("seed_type", "unknown")),
-                score=float(c.get("score", 0.0)),
-                reason=str(c.get("reason", "")),
-                overflow=bool(c.get("overflow", False)),
-                subtitle_path=str(c.get("subtitle_path", "")),
-            )
-        )
-    trim_warnings = trim_dead_air_on_boundaries(manifest, trim_candidates, cfg, root / "work")
-    for i, tc in enumerate(trim_candidates):
-        clip_objs[i]["start_seconds"] = tc.start_seconds
-        clip_objs[i]["end_seconds"] = tc.end_seconds
-        clip_objs[i]["reason"] = tc.reason
-    manifest_warnings.extend(trim_warnings)
-
-    clip_objs, proximity_warnings = _dedupe_fallback_clip_dicts(clip_objs)
-    manifest_warnings.extend(proximity_warnings)
-
-    _assign_simple_display_names_dict(clip_objs)
-    _assign_timeline_names_dict(clip_objs, batch_id)
-
-    captions_cfg = cfg.get("captions", {})
-    captions_enabled = bool(captions_cfg.get("enabled", True)) and bool(generate_subtitles)
-    if captions_enabled:
-        def _generate_subtitles_once() -> int:
-            _log(f"subtitle_generation_start vod={vod_path}")
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                with redirect_stderr(io.StringIO()):
-                    if transcript_exists and transcript_path_cached.exists():
-                        transcript_path = transcript_path_cached
-                        _log(f"subtitle_transcript_cache_hit vod={vod_path} transcript={transcript_path}")
-                    else:
-                        transcript_path = ensure_transcript(vod_path, cfg, root / "output" / "transcripts")
-                    _log(f"transcript_ok vod={vod_path} transcript={transcript_path}")
-                    subtitle_dir = root / "output" / "subtitles" / batch_id
-                    subtitle_dir.mkdir(parents=True, exist_ok=True)
-                    subtitles_generated_local = 0
-                    srt_name_usage: dict[str, int] = {}
-                    subtitle_index_rows: list[dict[str, str]] = []
-                    total_clips = max(1, len(clip_objs))
-                    for idx_clip, c in enumerate(clip_objs, start=1):
-                        base_label = str(c.get("display_name") or c.get("clip_id") or "clip").strip()
-                        base_name = _safe_name_token(base_label, limit=120)
-                        if not base_name:
-                            base_name = "clip"
-                        idx = srt_name_usage.get(base_name, 0) + 1
-                        srt_name_usage[base_name] = idx
-                        subtitle_name = base_name if idx == 1 else f"{base_name}_{idx}"
-                        srt_path = subtitle_dir / f"{subtitle_name}.srt"
-                        ok = generate_srt_for_clip(
-                            transcript_path,
-                            float(c.get("start_seconds", 0.0)),
-                            float(c.get("end_seconds", 0.0)),
-                            srt_path,
-                            captions_cfg,
-                        )
-                        if ok:
-                            resolved_srt = str(srt_path.resolve())
-                            c["subtitle_path"] = resolved_srt
-                            subtitles_generated_local += 1
-                            subtitle_index_rows.append(
-                                {
-                                    "clip_id": str(c.get("clip_id", "")),
-                                    "display_name": str(c.get("display_name", "")),
-                                    "srt_file": srt_path.name,
-                                    "srt_path": resolved_srt,
-                                }
-                            )
-                        if callable(progress_cb):
-                            pct = 20 + int(round((idx_clip / total_clips) * 70))
-                            progress_cb("Batch+Subtitles", min(90, pct), 100, f"Generation sous-titres {idx_clip}/{total_clips}")
-                    index_path = subtitle_dir / "index.csv"
-                    with index_path.open("w", encoding="utf-8", newline="") as f_idx:
-                        writer = csv.DictWriter(f_idx, fieldnames=["clip_id", "display_name", "srt_file", "srt_path"])
-                        writer.writeheader()
-                        writer.writerows(subtitle_index_rows)
-                    return subtitles_generated_local
-
-        try:
-            subtitles_generated = _generate_subtitles_once()
-            _log(f"subtitle_generation_count={subtitles_generated}/{len(clip_objs)} vod={vod_path.name}")
-            if subtitles_generated == 0 and clip_objs:
-                manifest_warnings.append(f"{vod_path.name}: subtitle generation returned 0 files for {len(clip_objs)} clips")
-        except Exception as exc:
-            msg = str(exc)
-            retriable = "returned a result with an exception set" in msg or "PyCapsule_GetPointer" in msg
-            if retriable:
-                _log(f"subtitle_generation_retry_after_runtime_error vod={vod_path.name} err={msg}")
-                try:
-                    subtitles_generated = _generate_subtitles_once()
-                    _log(f"subtitle_generation_count={subtitles_generated}/{len(clip_objs)} vod={vod_path.name} retry=1")
-                    if subtitles_generated == 0 and clip_objs:
-                        manifest_warnings.append(f"{vod_path.name}: subtitle generation returned 0 files for {len(clip_objs)} clips")
-                except Exception as exc_retry:
-                    _log(f"subtitle_generation_error vod={vod_path.name} err={exc_retry}")
-                    manifest_warnings.append(f"{vod_path.name}: subtitle generation failed: {exc_retry}")
-            else:
-                _log(f"subtitle_generation_error vod={vod_path.name} err={exc}")
-                manifest_warnings.append(f"{vod_path.name}: subtitle generation failed: {exc}")
-    else:
-        _log(f"subtitle_generation_skipped vod={vod_path.name} reason=disabled_for_this_manifest")
-
-    out = {
-        "batch_id": batch_id,
-        "source_vods": [str(vod_path)],
-        "clips": clip_objs,
-        "pipeline_version": cfg.get("pipeline_version", "0.1.0"),
-        "meta": {
-            "source_vod_path": str(vod_path.resolve()),
-            "preset_id": preset_id,
-            "subtitle_preset_id": subtitle_preset_id,
-            "generated_with_subtitles": bool(captions_enabled),
-            "use_transcript_for_selection": bool(use_transcript_for_selection),
-            "transcript_path": str(transcript_path_cached),
-            "transcript_exists_pre_generation": bool(transcript_exists),
-        },
-        "warnings": manifest_warnings,
-        "quota_summary": [
-            {
-                "vod": vod_path.name,
-                "target_quota": target_quota,
-                "max_quota": max_quota,
-                "chapter_used": len([c for c in clip_objs if c.get("seed_type") == "chapter"]),
-                "fallback_added": len([c for c in clip_objs if c.get("seed_type") != "chapter"]),
-                "total_selected": len(clip_objs),
-            }
-        ],
-    }
-
-    out_dir = root / "output" / "manifests"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{batch_id}.json"
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2)
-        f.write("\n")
-    if callable(progress_cb):
-        progress_cb("Batch+Subtitles", 100, 100, "Manifest ecrit")
-    _log(f"Auto manifest generated: {out_path}")
-    return out_path
+    manifest_path = _build_manifest_for_vod(
+        root=root,
+        vod_path=vod_path,
+        cfg=cfg,
+        generate_subtitles=generate_subtitles,
+        use_transcript_for_selection=use_transcript_for_selection,
+        progress_cb=progress_cb,
+        preset_id=preset_id,
+        subtitle_preset_id=subtitle_preset_id,
+        log_cb=_log,
+    )
+    # Pre-create the clean VOD while the user is already waiting (avoids delay during Resolve build)
+    try:
+        _ensure_clean_vod(root, vod_path, cfg, progress_cb)
+    except Exception as _exc:
+        _log(f"clean_vod_precompute_error: {_exc}")
+    return manifest_path
 
 
 def _simple_tokenize(text: str) -> list[str]:
-    return [t for t in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split() if t]
+    return _batch_builder.simple_tokenize(text)
 
 
 def _semantic_match_score(query: str, text: str) -> float:
-    q = set(_simple_tokenize(query))
-    t = set(_simple_tokenize(text))
-    if not q or not t:
-        return 0.0
-    inter = len(q.intersection(t))
-    union = len(q.union(t))
-    return inter / max(1, union)
+    return _batch_builder.semantic_match_score(query, text)
 
 
 def _load_transcript_entries(root: Path, source_path: str) -> list[dict[str, Any]]:
-    transcript_dir = root / "output" / "transcripts"
-    source_stem = Path(source_path).stem
-    transcript_file = transcript_dir / f"{source_stem}.json"
-    if not transcript_file.exists():
-        return []
-    try:
-        with transcript_file.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        entries = data.get("entries", [])
-        return entries if isinstance(entries, list) else []
-    except Exception:
-        return []
+    return _batch_builder.load_transcript_entries(root, source_path)
 
 
 def _filter_plans_by_transcript_query(root: Path, plans: list[ClipPlan], query: str, max_seconds: int) -> list[ClipPlan]:
-    if not query.strip():
-        return plans
-    q = query.strip().lower()
-    min_score = 0.25
-    min_distance_seconds = 12.0
-    overlap_threshold = 0.8
-    lead_in_seconds = 5.0
-
-    plans_by_source: dict[str, list[ClipPlan]] = {}
-    for plan in plans:
-        plans_by_source.setdefault(plan.source_path, []).append(plan)
-
-    filtered: list[ClipPlan] = []
-    for source_path, source_plans in plans_by_source.items():
-        entries = _load_transcript_entries(root, source_path)
-        if not entries:
-            continue
-
-        candidate_windows: list[tuple[float, float, float]] = []
-        for e in entries:
-            text = str(e.get("text", ""))
-            score = _semantic_match_score(q, text)
-            if q in text.lower():
-                score = max(score, 0.9)
-            if score < min_score:
-                continue
-            raw_start = float(e.get("start", 0.0))
-            start = max(0.0, raw_start - lead_in_seconds)
-            end = start + float(max_seconds)
-            candidate_windows.append((score, start, end))
-
-        if not candidate_windows:
-            continue
-
-        candidate_windows.sort(key=lambda x: x[0], reverse=True)
-
-        deduped_windows: list[tuple[float, float, float]] = []
-        for score, start, end in candidate_windows:
-            too_close = False
-            for _, kept_start, kept_end in deduped_windows:
-                if abs(start - kept_start) < min_distance_seconds:
-                    too_close = True
-                    break
-                overlap = _overlap_ratio_from_ranges(start, end, kept_start, kept_end)
-                if overlap > overlap_threshold:
-                    too_close = True
-                    break
-            if not too_close:
-                deduped_windows.append((score, start, end))
-
-        if not deduped_windows:
-            continue
-
-        used = min(len(source_plans), len(deduped_windows))
-        for idx in range(used):
-            plan = source_plans[idx]
-            _, start, end = deduped_windows[idx]
-            plan.start_seconds = start
-            plan.end_seconds = end
-            filtered.append(plan)
-
-    return filtered
+    return _batch_builder.filter_plans_by_transcript_query(root, plans, query, max_seconds, _overlap_ratio_from_ranges)
 
 
 def _parse_manifest(manifest_path: Path) -> tuple[str, list[ClipPlan]]:
-    with manifest_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    batch_id = str(data.get("batch_id", manifest_path.stem))
-    raw_clips = data.get("clips", [])
-    plans: list[ClipPlan] = []
-    for c in raw_clips:
-        try:
-            start = float(c["start_seconds"])
-            end = float(c["end_seconds"])
-            if end <= start:
-                continue
-            plans.append(
-                ClipPlan(
-                    clip_id=str(c["clip_id"]),
-                    display_name=str(c.get("display_name", c.get("clip_id", ""))),
-                    timeline_name=str(c.get("timeline_name", "") or ""),
-                    source_path=str(c["source_path"]),
-                    start_seconds=start,
-                    end_seconds=end,
-                    seed_type=str(c.get("seed_type", "unknown")),
-                    subtitle_path=str(c.get("subtitle_path", "") or ""),
-                )
-            )
-        except Exception:
-            continue
-    return batch_id, plans
+    return _parse_manifest_impl(manifest_path)
 
 
 def _walk_folder_clips(folder: Any) -> list[Any]:
-    out = []
-    try:
-        clips = _safe_call(folder, "GetClipList", default=[])
-        out.extend(clips or [])
-    except Exception:
-        pass
-    for sub in _safe_call(folder, "GetSubFolderList", default=[]) or []:
-        out.extend(_walk_folder_clips(sub))
-    return out
+    return _media_pool.walk_folder_clips(folder, _safe_call)
 
 
 def _list_subtitle_template_candidates(media_pool: Any) -> list[str]:
-    root = _safe_call(media_pool, "GetRootFolder")
-    if root is None:
-        return []
-    names: set[str] = set()
-    for clip in _walk_folder_clips(root):
-        name = str(_safe_call(clip, "GetName", default="") or "").strip()
-        if not name:
-            continue
-        props = _safe_call(clip, "GetClipProperty", default={}) or {}
-        ctype = str(props.get("Type") or props.get("Clip Type") or "").strip().lower()
-        lowered = name.lower()
-        if (
-            "text+" in lowered
-            or "caption" in lowered
-            or "subtitle" in lowered
-            or "fusion title" in ctype
-            or "generator" in ctype
-            or "title" in ctype
-        ):
-            names.add(name)
-    out = sorted(names)
-    for forced in (STANDALONE_CAPTION_TEMPLATE_NAME, STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME):
-        if forced not in out:
-            out.insert(0, forced)
-    return out
+    return _media_pool.list_subtitle_template_candidates(
+        media_pool,
+        _safe_call,
+        (STANDALONE_CAPTION_TEMPLATE_NAME, STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME),
+    )
 
 
 def _find_media_pool_item_by_path(media_pool: Any, source_path: Path) -> Any | None:
-    root = _safe_call(media_pool, "GetRootFolder")
-    if root is None:
-        return None
-    source_abs = str(source_path.resolve()).lower()
-    for clip in _walk_folder_clips(root):
-        try:
-            props = clip.GetClipProperty() or {}
-            fp = str(props.get("File Path") or "").lower()
-            if fp == source_abs:
-                return clip
-        except Exception:
-            continue
-    return None
+    return _media_pool.find_media_pool_item_by_path(media_pool, source_path, _safe_call)
 
 
 def _path_from_clip_properties(props: Any) -> str:
-    if not isinstance(props, dict):
-        return ""
-    for key in ("File Path", "Clip File Path", "Source Path", "Media Path", "Path", "Filename", "File Name"):
-        raw = str(props.get(key) or "").strip()
-        if not raw:
-            continue
-        candidate = Path(raw)
-        if candidate.exists():
-            return str(candidate)
-    return ""
+    return _media_pool.path_from_clip_properties(props)
 
 
 def _source_path_from_resolve_clip(obj: Any) -> str:
-    if not obj:
-        return ""
-
-    media_item = _safe_call(obj, "GetMediaPoolItem")
-    if media_item:
-        path = _path_from_clip_properties(_safe_call(media_item, "GetClipProperty", default={}) or {})
-        if path:
-            return path
-
-    path = _path_from_clip_properties(_safe_call(obj, "GetClipProperty", default={}) or {})
-    if path:
-        return path
-
-    return _path_from_clip_properties(_safe_call(obj, "GetProperty", default={}) or {})
+    return _media_pool.source_path_from_resolve_clip(obj, _safe_call)
 
 
 def _ensure_media_item(media_pool: Any, source_path: Path) -> Any | None:
-    item = _find_media_pool_item_by_path(media_pool, source_path)
-    if item is not None:
-        return item
-    imported = _safe_call(media_pool, "ImportMedia", [str(source_path)], default=[])
-    if imported and len(imported) > 0:
-        return imported[0]
-    return None
+    return _media_pool.ensure_media_item(media_pool, source_path, _safe_call)
 
 
 def _ensure_media_item_with_status(media_pool: Any, source_path: Path) -> tuple[Any | None, str]:
-    existing = _find_media_pool_item_by_path(media_pool, source_path)
-    if existing is not None:
-        return existing, "already_exists"
-    imported = _safe_call(media_pool, "ImportMedia", [str(source_path)], default=[])
-    if imported and len(imported) > 0:
-        return imported[0], "imported"
-    return None, "failed"
+    return _media_pool.ensure_media_item_with_status(media_pool, source_path, _safe_call)
 
 
 def _append_clip_range(
@@ -3343,79 +1512,36 @@ def _append_clip_range(
     track_index: int = 1,
     record_frame: int = 0,
 ) -> bool:
-    _safe_call(media_pool, "SetCurrentTimeline", timeline)
-    payload = [
-        {
-            "mediaPoolItem": media_item,
-            "startFrame": start_frame,
-            "endFrame": end_frame,
-            "trackIndex": track_index,
-            "recordFrame": record_frame,
-        }
-    ]
-    result = _safe_call(media_pool, "AppendToTimeline", payload)
-    return bool(result)
+    return _media_pool.append_clip_range(
+        media_pool,
+        timeline,
+        media_item,
+        start_frame,
+        end_frame,
+        track_index,
+        record_frame,
+        _safe_call,
+    )
 
 
 def _apply_item_transform(item: Any, props: dict[str, float]) -> None:
-    key_map = {
-        "zoom_x": "ZoomX",
-        "zoom_y": "ZoomY",
-        "pan": "Pan",
-        "tilt": "Tilt",
-        "crop_top": "CropTop",
-        "crop_bottom": "CropBottom",
-        "crop_left": "CropLeft",
-        "crop_right": "CropRight",
-    }
-    for k, v in props.items():
-        rk = key_map.get(k)
-        if not rk:
-            continue
-        _safe_call(item, "SetProperty", rk, float(v))
+    _transforms.apply_item_transform(item, props, _safe_call)
 
 
 def _force_item_normal_speed(item: Any) -> None:
-    # Defensive normalization against API/build differences that can retain retime state.
-    for key, value in (
-        ("Speed", 100.0),
-        ("Clip Speed", 100.0),
-        ("RetimeProcess", 0),
-        ("Retime Process", 0),
-    ):
-        _safe_call(item, "SetProperty", key, value)
-    _safe_call(item, "SetClipProperty", "Speed", "100")
-    _safe_call(item, "SetClipProperty", "Clip Speed", "100")
+    _timelines.force_item_normal_speed(item, _safe_call)
 
 
 def _get_timeline_items_on_track(timeline: Any, track_index: int) -> list[Any]:
-    out = _safe_call(timeline, "GetItemListInTrack", "video", track_index, default=[])
-    return out or []
+    return _timelines.get_timeline_items_on_track(timeline, track_index, _safe_call)
 
 
 def _get_track_item_count(timeline: Any, track_type: str) -> int:
-    count = _safe_call(timeline, "GetTrackCount", track_type, default=0)
-    try:
-        count_i = int(count)
-    except Exception:
-        count_i = 0
-    total = 0
-    for idx in range(1, count_i + 1):
-        items = _safe_call(timeline, "GetItemListInTrack", track_type, idx, default=[])
-        total += len(items or [])
-    return total
+    return _timelines.get_track_item_count(timeline, track_type, _safe_call)
 
 
 def _read_speed_props(item: Any) -> str:
-    vals: list[str] = []
-    for key in ("Speed", "Clip Speed", "Retime Process", "RetimeProcess"):
-        v = _safe_call(item, "GetProperty", key, default=None)
-        if v is None:
-            props = _safe_call(item, "GetProperty", default={}) or {}
-            v = props.get(key)
-        if v is not None:
-            vals.append(f"{key}={v}")
-    return ";".join(vals) if vals else "no_speed_props"
+    return _timelines.read_speed_props(item, _safe_call)
 
 
 def _log_timeline_diagnostics(timeline: Any, plan: ClipPlan, expected_duration_s: float, mode: str) -> None:
@@ -3443,387 +1569,31 @@ def _log_timeline_diagnostics(timeline: Any, plan: ClipPlan, expected_duration_s
 
 
 def _get_item_at_current_frame(timeline: Any, track_index: int) -> Any | None:
-    items = _get_timeline_items_on_track(timeline, track_index)
-    if not items:
-        return None
-    cur = _safe_call(timeline, "GetCurrentFrame", default=0)
-    try:
-        cur_i = int(cur)
-    except Exception:
-        cur_i = 0
-    for it in items:
-        s = _safe_call(it, "GetStart", default=None)
-        e = _safe_call(it, "GetEnd", default=None)
-        if s is None or e is None:
-            continue
-        try:
-            if int(s) <= cur_i <= int(e):
-                return it
-        except Exception:
-            continue
-    return None
+    return _timelines.get_item_at_current_frame(timeline, track_index, _safe_call)
 
 
 def _get_first_item_on_track(timeline: Any, track_index: int) -> Any | None:
-    items = _get_timeline_items_on_track(timeline, track_index)
-    return items[0] if items else None
+    return _timelines.get_first_item_on_track(timeline, track_index, _safe_call)
 
 
 def _items_overlapping_frame_range(timeline: Any, track_index: int, start_frame: int, end_frame: int) -> list[Any]:
-    items = _get_timeline_items_on_track(timeline, track_index)
-    out: list[Any] = []
-    for it in items:
-        s = _safe_call(it, "GetStart", default=None)
-        e = _safe_call(it, "GetEnd", default=None)
-        if s is None or e is None:
-            continue
-        try:
-            si = int(s)
-            ei = int(e)
-        except Exception:
-            continue
-        if ei < start_frame or si > end_frame:
-            continue
-        out.append(it)
-    return out
+    return _timelines.items_overlapping_frame_range(timeline, track_index, start_frame, end_frame, _safe_call)
 
 
 def _get_timeline_selected_range(timeline: Any) -> tuple[int, int] | None:
-    # Resolve APIs differ across builds; try common variants.
-    for method_name in ("GetMarkInOut", "GetInOutPoints", "GetTimelineInOut"):
-        data = _safe_call(timeline, method_name, default=None)
-        if not isinstance(data, dict):
-            continue
-        for in_key, out_key in (("video", "video"), ("timeline", "timeline"), ("in", "out")):
-            raw_in = data.get(in_key)
-            raw_out = data.get(out_key)
-            if isinstance(raw_in, dict):
-                raw_in = raw_in.get("in")
-            if isinstance(raw_out, dict):
-                raw_out = raw_out.get("out")
-            try:
-                s = int(raw_in)
-                e = int(raw_out)
-            except Exception:
-                continue
-            if e >= s:
-                return s, e
-    return None
+    return _timelines.get_timeline_selected_range(timeline, _safe_call)
 
 
 def _read_item_transform(item: Any) -> dict[str, float]:
-    props: dict[str, float] = {}
-    key_map = {
-        "zoom_x": "ZoomX",
-        "zoom_y": "ZoomY",
-        "pan": "Pan",
-        "tilt": "Tilt",
-        "crop_top": "CropTop",
-        "crop_bottom": "CropBottom",
-        "crop_left": "CropLeft",
-        "crop_right": "CropRight",
-    }
-    for out_key, in_key in key_map.items():
-        v = _safe_call(item, "GetProperty", in_key, default=None)
-        if v is None:
-            d = _safe_call(item, "GetProperty", default={}) or {}
-            v = d.get(in_key)
-        try:
-            props[out_key] = float(v)
-        except Exception:
-            props[out_key] = 0.0
-    return props
+    return _transforms.read_item_transform(item, _safe_call)
 
 
 def _apply_preset_to_selected_clip(resolve: Any, preset: dict[str, Any], scope_mode: str = "whole_clip") -> tuple[bool, str]:
-    pm = _safe_call(resolve, "GetProjectManager")
-    project = _safe_call(pm, "GetCurrentProject") if pm else None
-    if not project:
-        return False, "Aucun projet ouvert"
-    timeline = _safe_call(project, "GetCurrentTimeline")
-    if not timeline:
-        return False, "Aucune timeline active"
-
-    mode = str(preset.get("mode", "single"))
-    use_range = scope_mode == "selected_range"
-    use_whole_timeline = scope_mode == "whole_timeline"
-    range_frames = _get_timeline_selected_range(timeline) if use_range else None
-    if use_range and range_frames is None:
-        return False, "Aucune plage In/Out sélectionnée sur la timeline"
-
-    if mode == "fixed_split":
-        if use_whole_timeline:
-            cam_items = _get_timeline_items_on_track(timeline, 1)
-            game_items = _get_timeline_items_on_track(timeline, 2)
-            if not cam_items or not game_items:
-                return False, "Toute la timeline: il faut des clips sur piste 1 (caméra) et piste 2 (gameplay)"
-            _log(f"Apply whole timeline mapping: camera->T1 items={len(cam_items)}, gameplay->T2 items={len(game_items)}")
-            for it in cam_items:
-                _apply_item_transform(it, dict(preset.get("camera", {})))
-            for it in game_items:
-                _apply_item_transform(it, dict(preset.get("gameplay", {})))
-            return True, f"Preset appliqué à toute la timeline (caméra T1: {len(cam_items)}, gameplay T2: {len(game_items)})"
-
-        if use_range and range_frames is not None:
-            start_f, end_f = range_frames
-            cam_items = _items_overlapping_frame_range(timeline, 1, start_f, end_f)
-            game_items = _items_overlapping_frame_range(timeline, 2, start_f, end_f)
-            if not cam_items or not game_items:
-                return False, "Il faut des clips sur piste 1 et piste 2 dans la plage sélectionnée"
-            _log(f"Apply selected range mapping: camera->T1 items={len(cam_items)}, gameplay->T2 items={len(game_items)}")
-            for it in cam_items:
-                _apply_item_transform(it, dict(preset.get("camera", {})))
-            for it in game_items:
-                _apply_item_transform(it, dict(preset.get("gameplay", {})))
-            return True, f"Preset appliqué à la plage (caméra T1: {len(cam_items)}, gameplay T2: {len(game_items)})"
-
-        cam_item = _get_item_at_current_frame(timeline, 1)
-        game_item = _get_item_at_current_frame(timeline, 2)
-        if not cam_item or not game_item:
-            return False, "Il faut piste 1 (caméra) et piste 2 (gameplay) au curseur de lecture"
-        _log("Apply selected clip mapping: camera->T1 gameplay->T2")
-        _apply_item_transform(cam_item, dict(preset.get("camera", {})))
-        _apply_item_transform(game_item, dict(preset.get("gameplay", {})))
-        return True, "Preset appliqué au clip sélectionné (piste 1=caméra, piste 2=gameplay)"
-
-    if use_whole_timeline:
-        try:
-            track_count = int(_safe_call(timeline, "GetTrackCount", "video", default=0) or 0)
-        except Exception:
-            track_count = 0
-        items: list[Any] = []
-        for track_idx in range(1, track_count + 1):
-            items.extend(_get_timeline_items_on_track(timeline, track_idx))
-        if not items:
-            return False, "Aucun clip vidéo trouvé sur la timeline"
-        for it in items:
-            _apply_item_transform(it, dict(preset.get("single", {})))
-        return True, f"Preset appliqué à {len(items)} clip(s) sur toute la timeline"
-
-    if use_range and range_frames is not None:
-        start_f, end_f = range_frames
-        items = _items_overlapping_frame_range(timeline, 1, start_f, end_f)
-        if not items:
-            return False, "Aucun clip trouvé sur la piste 1 dans la plage sélectionnée"
-        for it in items:
-            _apply_item_transform(it, dict(preset.get("single", {})))
-        return True, f"Preset appliqué à {len(items)} clip(s) dans la plage sélectionnée"
-
-    selected = _safe_call(timeline, "GetCurrentVideoItem")
-    if not selected:
-        return False, "Aucun clip sélectionné/courant"
-    _apply_item_transform(selected, dict(preset.get("single", {})))
-    return True, "Preset appliqué au clip sélectionné"
+    return _transforms.apply_preset_to_selected_clip(resolve, preset, scope_mode, _safe_call, _log)
 
 
 def _selected_clip_subtitle_context(resolve: Any) -> tuple[bool, str, dict[str, Any]]:
-    pm = _safe_call(resolve, "GetProjectManager")
-    project = _safe_call(pm, "GetCurrentProject") if pm else None
-    if not project:
-        return False, "No open project", {}
-    timeline = _safe_call(project, "GetCurrentTimeline")
-    if not timeline:
-        return False, "No active timeline", {}
-
-    project_fps = _fps_from_project(project)
-    media_pool = _safe_call(project, "GetMediaPool")
-
-    def _to_int(v: Any) -> int | None:
-        try:
-            return int(float(v))
-        except Exception:
-            return None
-
-    def _source_path_from_media_item(media_item: Any) -> str:
-        return _source_path_from_resolve_clip(media_item)
-
-    def _source_path_from_selected_media() -> str:
-        selected_media = _safe_call(media_pool, "GetSelectedClips", default=[]) if media_pool else []
-        selected_first = selected_media[0] if selected_media else None
-        return _source_path_from_media_item(selected_first)
-
-    def _log_unreadable_source(item_obj: Any) -> None:
-        name = str(_safe_call(item_obj, "GetName", default="") or "") if item_obj else ""
-        props = _safe_call(item_obj, "GetProperty", default={}) or {} if item_obj else {}
-        media_item = _safe_call(item_obj, "GetMediaPoolItem") if item_obj else None
-        media_props = _safe_call(media_item, "GetClipProperty", default={}) or {} if media_item else {}
-        prop_keys = ",".join(sorted(str(k) for k in props.keys())) if isinstance(props, dict) else ""
-        media_keys = ",".join(sorted(str(k) for k in media_props.keys())) if isinstance(media_props, dict) else ""
-        _log(f"selected_clip_source_unreadable item={name} item_keys={prop_keys} media_keys={media_keys}")
-
-    def _item_from_playhead_or_current() -> Any | None:
-        current = _safe_call(timeline, "GetCurrentVideoItem")
-        if current:
-            return current
-        video_track_count = int(_safe_call(timeline, "GetTrackCount", "video", default=0) or 0)
-        if video_track_count <= 0:
-            video_track_count = 1
-        for track_idx in range(video_track_count, 0, -1):
-            it = _get_item_at_current_frame(timeline, track_idx)
-            if it:
-                return it
-        return None
-
-    def _source_frame_range_from_item(item_obj: Any, record_start: int, record_end: int, source_fps: float) -> tuple[int, int] | None:
-        src_in = None
-        src_out = None
-        for meth in ("GetSourceStartFrame", "GetLeftOffset"):
-            val = _to_int(_safe_call(item_obj, meth, default=None))
-            if val is not None:
-                src_in = val
-                break
-        for meth in ("GetSourceEndFrame", "GetRightOffset"):
-            val = _to_int(_safe_call(item_obj, meth, default=None))
-            if val is not None:
-                src_out = val
-                break
-        if src_in is None or src_out is None:
-            all_props = _safe_call(item_obj, "GetProperty", default={}) or {}
-            if src_in is None:
-                src_in = _to_int(all_props.get("Source Start"))
-            if src_out is None:
-                src_out = _to_int(all_props.get("Source End"))
-        if src_in is None:
-            return None
-        if src_out is None or src_out <= src_in:
-            duration_source_frames = max(1, int(round(max(1, record_end - record_start) * (source_fps / max(1.0, float(project_fps))))))
-            src_out = src_in + duration_source_frames
-        if src_out <= src_in:
-            return None
-        return src_in, src_out
-
-    def _silence_cut_timeline_context() -> dict[str, Any] | None:
-        timeline_name = str(_safe_call(timeline, "GetName", default="timeline") or "timeline")
-        if not timeline_name.endswith("__silence_cut"):
-            return None
-        items = _get_timeline_items_on_track(timeline, 1)
-        if not items:
-            return None
-
-        timeline_start_frame = _to_int(_safe_call(timeline, "GetStartFrame", default=0)) or 0
-        source_path = ""
-        source_fps = float(project_fps)
-        segments: list[dict[str, float]] = []
-        for item_obj in sorted(items, key=lambda it: _to_int(_safe_call(it, "GetStart", default=0)) or 0):
-            record_start = _to_int(_safe_call(item_obj, "GetStart", default=None))
-            record_end = _to_int(_safe_call(item_obj, "GetEnd", default=None))
-            if record_start is None or record_end is None or record_end <= record_start:
-                continue
-            item_source = _source_path_from_resolve_clip(item_obj)
-            if not item_source:
-                continue
-            if source_path and str(Path(item_source).resolve()).lower() != str(Path(source_path).resolve()).lower():
-                continue
-            if not source_path:
-                source_path = item_source
-                media_item = _safe_call(item_obj, "GetMediaPoolItem")
-                source_fps = _source_fps_for_media_item(media_item, Path(source_path), project_fps) if media_item else float(project_fps)
-            frame_range = _source_frame_range_from_item(item_obj, record_start, record_end, source_fps)
-            if frame_range is None:
-                continue
-            src_in, src_out = frame_range
-            timeline_start_s = max(0.0, float(record_start - timeline_start_frame) / max(1.0, float(project_fps)))
-            segments.append(
-                {
-                    "source_start": max(0.0, float(src_in) / max(1.0, source_fps)),
-                    "source_end": max(0.0, float(src_out) / max(1.0, source_fps)),
-                    "timeline_start": timeline_start_s,
-                }
-            )
-
-        if not source_path or not segments:
-            _log(f"subtitle_silence_cut_segments_failed timeline={timeline_name} items={len(items)}")
-            return None
-        segments = [s for s in segments if float(s["source_end"]) > float(s["source_start"])]
-        if not segments:
-            return None
-        clip_start = min(float(s["source_start"]) for s in segments)
-        clip_end = max(float(s["source_end"]) for s in segments)
-        _log(f"subtitle_silence_cut_segments={len(segments)} timeline={timeline_name} source={source_path}")
-        return {
-            "project": project,
-            "timeline": timeline,
-            "media_pool": media_pool,
-            "source_path": source_path,
-            "clip_start": clip_start,
-            "clip_end": clip_end,
-            "timeline_name": timeline_name,
-            "item_name": timeline_name,
-            "subtitle_timing_segments": segments,
-            "subtitle_source_start": clip_start,
-        }
-
-    silence_ctx = _silence_cut_timeline_context()
-    if silence_ctx is not None:
-        return True, "ok", silence_ctx
-
-    item = _item_from_playhead_or_current()
-    source_path = ""
-    fallback_range: tuple[int, int] | None = None
-
-    if item is not None:
-        source_path = _source_path_from_resolve_clip(item)
-        if not source_path:
-            source_path = _source_path_from_selected_media()
-        if not source_path:
-            _log_unreadable_source(item)
-            return False, "Selected timeline clip has no readable source path. Select the source clip in Media Pool, or place the playhead on a plain video clip.", {}
-    else:
-        selected_media = _safe_call(media_pool, "GetSelectedClips", default=[]) if media_pool else []
-        selected_first = selected_media[0] if selected_media else None
-        if not selected_first:
-            return False, "No clip at playhead and no selected clip in Media Pool", {}
-        source_path = _source_path_from_media_item(selected_first)
-        if not source_path:
-            return False, "Selected Media Pool clip has no readable source path", {}
-        fallback_range = _get_timeline_selected_range(timeline)
-        if fallback_range is None:
-            return False, "No clip at playhead. Select timeline In/Out range to use selected Media Pool clip", {}
-
-    src_in = None
-    src_out = None
-
-    if fallback_range is not None:
-        src_in, src_out = fallback_range
-    else:
-        for meth in ("GetSourceStartFrame", "GetLeftOffset"):
-            val = _to_int(_safe_call(item, meth, default=None))
-            if val is not None:
-                src_in = val
-                break
-        for meth in ("GetSourceEndFrame", "GetRightOffset"):
-            val = _to_int(_safe_call(item, meth, default=None))
-            if val is not None:
-                src_out = val
-                break
-
-        if src_in is None or src_out is None:
-            all_props = _safe_call(item, "GetProperty", default={}) or {}
-            if src_in is None:
-                src_in = _to_int(all_props.get("Source Start"))
-            if src_out is None:
-                src_out = _to_int(all_props.get("Source End"))
-
-        if src_in is None or src_out is None or src_out <= src_in:
-            tl_start = _to_int(_safe_call(item, "GetStart", default=None))
-            tl_end = _to_int(_safe_call(item, "GetEnd", default=None))
-            if tl_start is None or tl_end is None or tl_end <= tl_start:
-                return False, "Could not read clip range from timeline item", {}
-            src_in = 0
-            src_out = max(1, tl_end - tl_start)
-
-    clip_start = max(0.0, float(src_in) / max(1, project_fps))
-    clip_end = max(clip_start + 0.1, float(src_out) / max(1, project_fps))
-    return True, "ok", {
-        "project": project,
-        "timeline": timeline,
-        "media_pool": media_pool,
-        "source_path": source_path,
-        "clip_start": clip_start,
-        "clip_end": clip_end,
-        "timeline_name": str(_safe_call(timeline, "GetName", default="timeline")),
-        "item_name": str(_safe_call(item, "GetName", default="clip")),
-    }
+    return _selected_clip.selected_clip_subtitle_context(resolve, _safe_call, _log, _fps_from_project, _source_fps_for_media_item)
 
 
 def _load_audio_energy_for_silence_cut(
@@ -3832,48 +1602,7 @@ def _load_audio_energy_for_silence_cut(
     cfg: dict[str, Any],
     cache: dict[str, tuple[list[tuple[float, float]], str]],
 ) -> tuple[list[tuple[float, float]], str, list[str]]:
-    source_key = str(source_path.resolve()).lower()
-    if source_key in cache:
-        energies, source_label = cache[source_key]
-        return energies, source_label, []
-
-    root_str = str(root)
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
-    from short_editor.clip_builder import _compute_window_energy, _extract_mono_wav, _extract_track_wav
-
-    audio_cfg = cfg.get("audio", {}) if isinstance(cfg.get("audio", {}), dict) else {}
-    analysis_cfg = audio_cfg.get("analysis", {}) if isinstance(audio_cfg.get("analysis", {}), dict) else {}
-    render_cfg = audio_cfg.get("render", {}) if isinstance(audio_cfg.get("render", {}), dict) else {}
-    voice_track = int(analysis_cfg.get("voice_track", 2))
-    render_track = int(render_cfg.get("base_track", 6))
-    window_seconds = float(audio_cfg.get("silence_cut", {}).get("window_seconds", 0.12)) if isinstance(audio_cfg.get("silence_cut", {}), dict) else 0.12
-    window_seconds = max(0.06, min(0.5, window_seconds))
-
-    warnings_out: list[str] = []
-    work_parent = root / "work"
-    work_parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=str(work_parent)) as tmp_dir:
-        tmp = Path(tmp_dir)
-        wav_path = tmp / "silence_cut.wav"
-        source_label = f"piste voix {voice_track}"
-        if not _extract_track_wav(str(source_path), wav_path, voice_track):
-            source_label = f"piste rendu {render_track}"
-            if not _extract_track_wav(str(source_path), wav_path, render_track):
-                source_label = "mix mono"
-                try:
-                    _extract_mono_wav(str(source_path), wav_path)
-                except Exception as exc:
-                    warnings_out.append(f"Analyse audio impossible pour {source_path.name}: {exc}")
-                    cache[source_key] = ([], source_label)
-                    return [], source_label, warnings_out
-                warnings_out.append(f"{source_path.name}: fallback analyse silence sur mix mono.")
-            else:
-                warnings_out.append(f"{source_path.name}: fallback analyse silence sur piste rendu {render_track}.")
-        energies = _compute_window_energy(wav_path, window_seconds=window_seconds)
-
-    cache[source_key] = (energies, source_label)
-    return energies, source_label, warnings_out
+    return _silence_cut.load_audio_energy_for_silence_cut(root, source_path, cfg, cache)
 
 
 def _detect_audible_segments_for_silence_cut(
@@ -3882,89 +1611,7 @@ def _detect_audible_segments_for_silence_cut(
     clip_end: float,
     cfg: dict[str, Any],
 ) -> tuple[list[tuple[float, float]], dict[str, float]]:
-    if clip_end <= clip_start:
-        return [], {"cuts": 0.0, "removed_seconds": 0.0, "threshold": 0.0}
-    root_str = str(_repo_root())
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
-    from short_editor.clip_builder import _percentile
-
-    audio_cfg = cfg.get("audio", {}) if isinstance(cfg.get("audio", {}), dict) else {}
-    cut_cfg = audio_cfg.get("silence_cut", {}) if isinstance(audio_cfg.get("silence_cut", {}), dict) else {}
-    min_silence = max(0.25, float(cut_cfg.get("min_silence_seconds", 0.55)))
-    padding = max(0.05, float(cut_cfg.get("padding_seconds", 0.18)))
-    merge_gap = max(0.08, float(cut_cfg.get("merge_gap_seconds", 0.28)))
-    min_segment = max(0.2, float(cut_cfg.get("min_segment_seconds", 0.45)))
-
-    clip_energies = [(t, e) for t, e in energies if clip_start <= t <= clip_end]
-    if len(clip_energies) < 3:
-        return [(clip_start, clip_end)], {"cuts": 0.0, "removed_seconds": 0.0, "threshold": 0.0}
-
-    values = [float(e) for _, e in clip_energies]
-    low = _percentile(values, 0.35)
-    high = _percentile(values, 0.78)
-    threshold = low + max(0.0, high - low) * 0.28
-    if threshold <= 0:
-        threshold = max(values) * 0.12
-    if threshold <= 0:
-        return [(clip_start, clip_end)], {"cuts": 0.0, "removed_seconds": 0.0, "threshold": 0.0}
-
-    active_ranges: list[tuple[float, float]] = []
-    current_start: float | None = None
-    last_t: float | None = None
-    estimated_step = max(0.08, min_silence / 4)
-    if len(clip_energies) >= 2:
-        deltas = [clip_energies[i + 1][0] - clip_energies[i][0] for i in range(len(clip_energies) - 1) if clip_energies[i + 1][0] > clip_energies[i][0]]
-        if deltas:
-            estimated_step = max(0.06, min(0.5, sorted(deltas)[len(deltas) // 2]))
-
-    for t, energy in clip_energies:
-        is_active = float(energy) >= threshold
-        if is_active and current_start is None:
-            current_start = max(clip_start, t)
-        if is_active:
-            last_t = t
-        elif current_start is not None and last_t is not None:
-            active_ranges.append((current_start, min(clip_end, last_t + estimated_step)))
-            current_start = None
-            last_t = None
-    if current_start is not None and last_t is not None:
-        active_ranges.append((current_start, min(clip_end, last_t + estimated_step)))
-
-    if not active_ranges:
-        return [(clip_start, clip_end)], {"cuts": 0.0, "removed_seconds": 0.0, "threshold": threshold}
-
-    padded = [(max(clip_start, s - padding), min(clip_end, e + padding)) for s, e in active_ranges]
-    merged: list[tuple[float, float]] = []
-    for s, e in padded:
-        if e - s < min_segment:
-            mid = (s + e) / 2.0
-            s = max(clip_start, mid - min_segment / 2.0)
-            e = min(clip_end, mid + min_segment / 2.0)
-        if not merged:
-            merged.append((s, e))
-            continue
-        prev_s, prev_e = merged[-1]
-        gap = s - prev_e
-        if gap <= merge_gap or gap < min_silence:
-            merged[-1] = (prev_s, max(prev_e, e))
-        else:
-            merged.append((s, e))
-
-    final_segments: list[tuple[float, float]] = []
-    for s, e in merged:
-        if e - s >= min_segment:
-            final_segments.append((round(s, 3), round(e, 3)))
-    if not final_segments:
-        final_segments = [(clip_start, clip_end)]
-
-    original_duration = max(0.0, clip_end - clip_start)
-    kept_duration = sum(max(0.0, e - s) for s, e in final_segments)
-    removed = max(0.0, original_duration - kept_duration)
-    cuts = max(0, len(final_segments) - 1)
-    if removed < min_silence:
-        return [(clip_start, clip_end)], {"cuts": 0.0, "removed_seconds": 0.0, "threshold": threshold}
-    return final_segments, {"cuts": float(cuts), "removed_seconds": removed, "threshold": threshold}
+    return _silence_cut.detect_audible_segments_for_silence_cut(energies, clip_start, clip_end, cfg, _repo_root())
 
 
 def _append_silence_cut_segment_with_preset(
@@ -3976,32 +1623,17 @@ def _append_silence_cut_segment_with_preset(
     record_frame: int,
     preset: dict[str, Any],
 ) -> None:
-    mode = str(preset.get("mode", "single"))
-    if mode == "fixed_split":
-        _append_clip_range(media_pool, timeline, media_item, start_frame, end_frame, track_index=1, record_frame=record_frame)
-        track_count = _safe_call(timeline, "GetTrackCount", "video", default=1) or 1
-        try:
-            track_count_i = int(track_count)
-        except Exception:
-            track_count_i = 1
-        if track_count_i < 2:
-            _safe_call(timeline, "AddTrack", "video")
-        _append_clip_range(media_pool, timeline, media_item, start_frame, end_frame, track_index=2, record_frame=record_frame)
-        track1_items = _items_overlapping_frame_range(timeline, 1, record_frame, record_frame + max(1, end_frame - start_frame) + 2)
-        track2_items = _items_overlapping_frame_range(timeline, 2, record_frame, record_frame + max(1, end_frame - start_frame) + 2)
-        for it in track1_items:
-            _force_item_normal_speed(it)
-            _apply_item_transform(it, dict(preset.get("camera", {})))
-        for it in track2_items:
-            _force_item_normal_speed(it)
-            _apply_item_transform(it, dict(preset.get("gameplay", {})))
-        return
-
-    _append_clip_range(media_pool, timeline, media_item, start_frame, end_frame, track_index=1, record_frame=record_frame)
-    items = _items_overlapping_frame_range(timeline, 1, record_frame, record_frame + max(1, end_frame - start_frame) + 2)
-    for it in items:
-        _force_item_normal_speed(it)
-        _apply_item_transform(it, dict(preset.get("single", {})))
+    _timelines.append_silence_cut_segment_with_preset(
+        media_pool,
+        timeline,
+        media_item,
+        start_frame,
+        end_frame,
+        record_frame,
+        preset,
+        _safe_call,
+        _apply_item_transform,
+    )
 
 
 def _create_silence_cut_timeline(
@@ -4013,37 +1645,26 @@ def _create_silence_cut_timeline(
     segments_seconds: list[tuple[float, float]],
     preset: dict[str, Any],
 ) -> tuple[Any | None, list[str]]:
-    warnings_out: list[str] = []
-    media_item = _ensure_media_item(media_pool, source_path)
-    if media_item is None:
-        return None, [f"Impossible d'importer le média: {source_path}"]
-    project_fps = _fps_from_project(project)
-    source_fps = _source_fps_for_media_item(media_item, source_path, project_fps)
-    _delete_timeline_if_exists(project, media_pool, timeline_name)
-    timeline = _safe_call(media_pool, "CreateEmptyTimeline", timeline_name)
-    if not timeline:
-        return None, [f"Impossible de créer la timeline: {timeline_name}"]
-    _force_timeline_fps_60(project, timeline)
-
-    record_frame = 0
-    for s, e in segments_seconds:
-        start_frame = int(round(s * source_fps))
-        end_frame = int(round(e * source_fps))
-        if end_frame <= start_frame:
-            warnings_out.append(f"Segment ignoré: {s:.2f}-{e:.2f}s")
-            continue
-        _append_silence_cut_segment_with_preset(media_pool, timeline, media_item, start_frame, end_frame, record_frame, preset)
-        record_frame += max(1, int(round((e - s) * project_fps)))
-    if record_frame <= 0:
-        warnings_out.append(f"Aucun segment valide pour {timeline_name}")
-    return timeline, warnings_out
+    return _silence_cut.create_silence_cut_timeline(
+        root,
+        project,
+        media_pool,
+        source_path,
+        timeline_name,
+        segments_seconds,
+        preset,
+        _ensure_media_item,
+        _fps_from_project,
+        _source_fps_for_media_item,
+        _delete_timeline_if_exists,
+        _force_timeline_fps_60,
+        _append_silence_cut_segment_with_preset,
+        _safe_call,
+    )
 
 
 def _suffix_timeline_name(base_name: str, suffix: str = "__silence_cut") -> str:
-    clean = _safe_name_token(base_name, limit=100)
-    if clean.endswith(suffix):
-        return clean
-    return _safe_name_token(f"{clean}{suffix}", limit=120)
+    return _suffix_timeline_name_impl(base_name, suffix)
 
 
 def _create_timeline_for_clip_with_preset(
@@ -4055,656 +1676,107 @@ def _create_timeline_for_clip_with_preset(
     end_frame: int,
     preset: dict[str, Any],
 ) -> Any | None:
-    timeline = _safe_call(media_pool, "CreateEmptyTimeline", name)
-    if not timeline:
-        return None
-    _force_timeline_fps_60(project, timeline)
-
-    mode = str(preset.get("mode", "single"))
-    if mode == "fixed_split":
-        # Track mapping for composition: track 1 = camera (bottom), track 2 = gameplay (top)
-        _log("Build timeline mapping: camera->T1 gameplay->T2 stack_same_record_frame")
-        _append_clip_range(media_pool, timeline, media_item, start_frame, end_frame, track_index=1, record_frame=0)
-        _safe_call(timeline, "AddTrack", "video")
-        _append_clip_range(media_pool, timeline, media_item, start_frame, end_frame, track_index=2, record_frame=0)
-        items_t1 = _get_timeline_items_on_track(timeline, 1)
-        items_t2 = _get_timeline_items_on_track(timeline, 2)
-        if items_t1:
-            _force_item_normal_speed(items_t1[0])
-            _apply_item_transform(items_t1[0], dict(preset.get("camera", {})))
-        if items_t2:
-            _force_item_normal_speed(items_t2[0])
-            _apply_item_transform(items_t2[0], dict(preset.get("gameplay", {})))
-        return timeline
-
-    ok = _append_clip_range(media_pool, timeline, media_item, start_frame, end_frame, track_index=1)
-    if not ok:
-        return None
-    items_t1 = _get_timeline_items_on_track(timeline, 1)
-    if items_t1:
-        _force_item_normal_speed(items_t1[0])
-        _apply_item_transform(items_t1[0], dict(preset.get("single", {})))
-    return timeline
+    return _timelines.create_timeline_for_clip_with_preset(
+        project,
+        media_pool,
+        name,
+        media_item,
+        start_frame,
+        end_frame,
+        preset,
+        _safe_call,
+        _log,
+        _force_timeline_fps_60,
+        _apply_item_transform,
+    )
 
 
 def _create_timeline_for_clip(media_pool: Any, name: str, media_item: Any, start_frame: int, end_frame: int) -> Any | None:
-    timeline = _safe_call(media_pool, "CreateEmptyTimeline", name)
-    if not timeline:
-        return None
-    ok = _append_clip_range(media_pool, timeline, media_item, start_frame, end_frame, track_index=1)
-    return timeline if ok else None
+    return _timelines.create_timeline_for_clip(media_pool, name, media_item, start_frame, end_frame, _safe_call)
 
 
 def _ensure_batch_folder(media_pool: Any, batch_id: str) -> Any:
-    root = _safe_call(media_pool, "GetRootFolder", required=True)
-    for f in _safe_call(root, "GetSubFolderList", default=[]) or []:
-        if _safe_call(f, "GetName", default="") == "ShortEditor":
-            short_editor = f
-            break
-    else:
-        short_editor = _safe_call(media_pool, "AddSubFolder", root, "ShortEditor", required=True)
-
-    for f in _safe_call(short_editor, "GetSubFolderList", default=[]) or []:
-        if _safe_call(f, "GetName", default="") == batch_id:
-            batch_folder = f
-            break
-    else:
-        batch_folder = _safe_call(media_pool, "AddSubFolder", short_editor, batch_id, required=True)
-
-    _safe_call(media_pool, "SetCurrentFolder", batch_folder)
-    return batch_folder
+    return _media_pool.ensure_batch_folder(media_pool, batch_id, _safe_call)
 
 
 def _ensure_shorteditor_subfolder(media_pool: Any, subfolder_name: str) -> Any:
-    root = _safe_call(media_pool, "GetRootFolder", required=True)
-    for f in _safe_call(root, "GetSubFolderList", default=[]) or []:
-        if _safe_call(f, "GetName", default="") == "ShortEditor":
-            short_editor = f
-            break
-    else:
-        short_editor = _safe_call(media_pool, "AddSubFolder", root, "ShortEditor", required=True)
-
-    for f in _safe_call(short_editor, "GetSubFolderList", default=[]) or []:
-        if _safe_call(f, "GetName", default="") == subfolder_name:
-            folder = f
-            break
-    else:
-        folder = _safe_call(media_pool, "AddSubFolder", short_editor, subfolder_name, required=True)
-
-    _safe_call(media_pool, "SetCurrentFolder", folder)
-    return folder
+    return _media_pool.ensure_shorteditor_subfolder(media_pool, subfolder_name, _safe_call)
 
 
 def _set_shorts_render_defaults(project: Any, output_dir: Path, timeline_name: str) -> None:
-    loaded = False
-    for preset in ("H264_Shorts_1080x1920_60fps", "H.264 Master", "YouTube"):
-        try:
-            if _safe_call(project, "LoadRenderPreset", preset, default=False):
-                loaded = True
-                break
-        except Exception:
-            continue
-
-    if not loaded:
-        try:
-            _safe_call(project, "SetCurrentRenderFormatAndCodec", "mp4", "H264")
-        except Exception:
-            try:
-                _safe_call(project, "SetCurrentRenderFormatAndCodec", "mp4", "H.264")
-            except Exception:
-                pass
-
-    render_settings = {
-        "TargetDir": str(output_dir),
-        "CustomName": timeline_name,
-        "FormatWidth": 1080,
-        "FormatHeight": 1920,
-        "ResolutionWidth": 1080,
-        "ResolutionHeight": 1920,
-        "FrameRate": 60,
-        "VideoQuality": "Best",
-        "SelectAllFrames": True,
-        "UseCustomSettings": True,
-    }
-    _safe_call(project, "SetRenderSettings", render_settings)
+    _render_queue.set_shorts_render_defaults(project, output_dir, timeline_name, _safe_call)
 
 
 def _ensure_vertical_project_settings(project: Any) -> None:
-    # Resolve API can vary by build; set multiple known keys.
-    _safe_call(project, "SetSetting", "timelineResolutionWidth", "1080")
-    _safe_call(project, "SetSetting", "timelineResolutionHeight", "1920")
-    _safe_call(project, "SetSetting", "timelineFrameRate", "60")
-    _safe_call(project, "SetSetting", "timelinePlaybackFrameRate", "60")
-    # Extra compatibility keys/values for builds that ignore one spelling.
-    for key in ("timelineFrameRate", "timelinePlaybackFrameRate", "playbackFrameRate"):
-        for value in ("60", "60.0", "60.000"):
-            _safe_call(project, "SetSetting", key, value)
-    _safe_call(project, "SetSetting", "timelineOutputResolutionWidth", "1080")
-    _safe_call(project, "SetSetting", "timelineOutputResolutionHeight", "1920")
-    # Prefer crop behavior when source is 16:9.
-    _safe_call(project, "SetSetting", "inputScalingPreset", "Scale full frame with crop")
+    _project_settings.ensure_vertical_project_settings(project, _safe_call)
 
 
 def _ensure_playback_fps_60(project: Any) -> bool:
-    """Best-effort normalization to avoid 60->24 preview slowdown."""
-    for key in ("timelinePlaybackFrameRate", "playbackFrameRate"):
-        for value in ("60", "60.0", "60.000"):
-            _safe_call(project, "SetSetting", key, value)
-    timeline_fps = _safe_int_from_project_setting(project, "timelineFrameRate", DEFAULT_FPS)
-    playback_fps = _safe_int_from_project_setting(project, "timelinePlaybackFrameRate", DEFAULT_FPS)
-    _log(f"playback_fps_verify timeline={timeline_fps} playback={playback_fps}")
-    return timeline_fps == 60 and playback_fps == 60
+    return _project_settings.ensure_playback_fps_60(project, DEFAULT_FPS, _safe_call, _log)
 
 
 def _force_timeline_fps_60(project: Any, timeline: Any) -> None:
-    _safe_call(project, "SetCurrentTimeline", timeline)
-    for key in ("timelineFrameRate", "timelinePlaybackFrameRate", "playbackFrameRate"):
-        for value in ("60", "60.0", "60.000"):
-            _safe_call(timeline, "SetSetting", key, value)
-    t_tl = _safe_call(timeline, "GetSetting", "timelineFrameRate", default=None)
-    t_pb = _safe_call(timeline, "GetSetting", "timelinePlaybackFrameRate", default=None)
-    _log(f"timeline_fps_verify name={_safe_call(timeline, 'GetName', default='timeline')} timeline={t_tl} playback={t_pb}")
+    _project_settings.force_timeline_fps_60(project, timeline, _safe_call, _log)
 
 
 def _apply_preview_safe_playback(project: Any) -> list[str]:
-    warnings_out: list[str] = []
-    attempts = [
-        ("renderCacheMode", "user"),
-        ("renderCacheMode", "User"),
-        ("proxyMediaMode", "half"),
-        ("proxyMediaMode", "Half"),
-        ("timelineProxyResolution", "half"),
-        ("timelineProxyResolution", "Half"),
-    ]
-    applied = 0
-    for key, value in attempts:
-        out = _safe_call(project, "SetSetting", key, value, default=False)
-        if out:
-            applied += 1
-            _log(f"preview_safe_setting_applied {key}={value}")
-    if applied == 0:
-        warnings_out.append("Preview Safe Mode: Resolve API n'a pas expose les settings cache/proxy sur cette build.")
-    else:
-        _log(f"preview_safe_settings_applied_count={applied}")
-    return warnings_out
+    return _project_settings.apply_preview_safe_playback(project, _safe_call, _log)
 
 
 def _queue_render_job(project: Any, timeline: Any, output_dir: Path, preset_name: str) -> bool:
-    _safe_call(project, "SetCurrentTimeline", timeline)
-    loaded = False
-    try:
-        loaded = bool(_safe_call(project, "LoadRenderPreset", preset_name, default=False))
-    except Exception:
-        loaded = False
-    timeline_name = _safe_call(timeline, "GetName", default="timeline")
-    if not loaded:
-        _set_shorts_render_defaults(project, output_dir, timeline_name)
-    else:
-        _safe_call(
-            project,
-            "SetRenderSettings",
-            {
-                "TargetDir": str(output_dir),
-                "CustomName": timeline_name,
-                "FormatWidth": 1080,
-                "FormatHeight": 1920,
-                "FrameRate": 60,
-                "UseCustomSettings": True,
-            },
-        )
-    _log(f"Render settings applied for {timeline_name}: 1080x1920@60")
-    job_id = _safe_call(project, "AddRenderJob")
-    return bool(job_id)
+    return _render_queue.queue_render_job(project, timeline, output_dir, preset_name, _safe_call, _log)
 
 
 def _collect_unique_media_items_from_timelines(timelines: list[Any]) -> list[Any]:
-    seen: set[str] = set()
-    out: list[Any] = []
-    for tl in timelines:
-        track_count = _safe_call(tl, "GetTrackCount", "video", default=0)
-        try:
-            track_count_i = int(track_count)
-        except Exception:
-            track_count_i = 0
-        for track_idx in range(1, max(1, track_count_i) + 1):
-            items = _safe_call(tl, "GetItemListInTrack", "video", track_idx, default=[]) or []
-            for it in items:
-                media_item = _safe_call(it, "GetMediaPoolItem")
-                if media_item is None:
-                    continue
-                uid = str(id(media_item))
-                if uid in seen:
-                    continue
-                seen.add(uid)
-                out.append(media_item)
-    return out
-
-
-def _generate_optimized_media_for_batch(
-    root: Path,
-    project: Any,
-    media_pool: Any,
-    batch_id: str,
-    timelines: list[Any],
-    progress_cb: Any | None = None,
-) -> tuple[list[str], Path]:
-    warnings: list[str] = []
-    out_dir = root / "output" / "resolve_optimized" / batch_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    report_path = out_dir / "optimized_index.csv"
-
-    # Try setting a dedicated optimized media location for this quality run.
-    configured_path = False
-    for key in ("optimizedMediaPath", "OptimizedMediaPath"):
-        if _safe_call(project, "SetSetting", key, str(out_dir), default=False):
-            configured_path = True
-            _log(f"optimized_media_path_set key={key} path={out_dir}")
-            break
-
-    media_items = _collect_unique_media_items_from_timelines(timelines)
-    total = len(media_items)
-    if total == 0:
-        with report_path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["batch_id", "timeline", "clip_name", "source_path", "status", "notes"])
-        warnings.append("Optimized media skipped: no media items found in current batch timelines.")
-        return warnings, report_path
-
-    rows: list[list[str]] = []
-    success_count = 0
-
-    def _try_generate(item: Any) -> bool:
-        variants = [
-            (media_pool, "GenerateOptimizedMedia", [item]),
-            (media_pool, "GenerateOptimizedMedia", item),
-            (project, "GenerateOptimizedMedia", [item]),
-            (project, "GenerateOptimizedMedia", item),
-        ]
-        for obj, method, payload in variants:
-            out = _safe_call(obj, method, payload, default=None)
-            if bool(out):
-                return True
-        return False
-
-    for idx, item in enumerate(media_items, start=1):
-        if callable(progress_cb):
-            progress_cb("Optimized Media", idx - 1, max(1, total), f"Optimizing media {idx}/{total}")
-
-        clip_name = str(_safe_call(item, "GetName", default="clip"))
-        props = _safe_call(item, "GetClipProperty", default={}) or {}
-        source_path = str(props.get("File Path") or "")
-        ok = _try_generate(item)
-        status = "requested" if ok else "failed"
-        if ok:
-            success_count += 1
-        rows.append([
-            batch_id,
-            "",
-            clip_name,
-            source_path,
-            status,
-            "optimized path configured" if configured_path else "resolve managed cache path",
-        ])
-
-    with report_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["batch_id", "timeline", "clip_name", "source_path", "status", "notes"])
-        writer.writerows(rows)
-
-    if callable(progress_cb):
-        progress_cb("Optimized Media", total, max(1, total), f"Optimized media requested {success_count}/{total}")
-
-    if not configured_path:
-        warnings.append("Optimized media generated via Resolve cache path (API could not set dedicated optimized media folder).")
-    if success_count < total:
-        warnings.append(f"Optimized media requested for {success_count}/{total} item(s).")
-    _log(f"optimized_media_summary batch={batch_id} requested={success_count}/{total} report={report_path}")
-    return warnings, report_path
+    return _render_queue.collect_unique_media_items_from_timelines(timelines, _safe_call)
 
 
 def _find_timeline_by_name(project: Any, timeline_name: str) -> Any | None:
-    count = _safe_call(project, "GetTimelineCount", default=0) or 0
-    try:
-        count = int(count)
-    except Exception:
-        count = 0
-    for i in range(1, count + 1):
-        tl = _safe_call(project, "GetTimelineByIndex", i)
-        if not tl:
-            continue
-        name = _safe_call(tl, "GetName", default="")
-        if name == timeline_name:
-            return tl
-    return None
+    return _timelines.find_timeline_by_name(project, timeline_name, _safe_call)
 
 
 def _delete_timeline_if_exists(project: Any, media_pool: Any, timeline_name: str) -> None:
-    tl = _find_timeline_by_name(project, timeline_name)
-    if not tl:
-        return
-    # API variants across Resolve builds.
-    deleted = _safe_call(media_pool, "DeleteTimelines", [tl], default=False)
-    if not deleted:
-        _safe_call(project, "DeleteTimeline", tl, default=False)
+    _timelines.delete_timeline_if_exists(project, media_pool, timeline_name, _safe_call)
 
 
 def _import_subtitles_to_timeline(
     project: Any,
     media_pool: Any,
     timeline: Any,
-    subtitle_path: Path,
+    subtitle_segments: list[dict[str, Any]],
     template_name: str = SUBTITLE_TEMPLATE_AUTO_LABEL,
     offset_ms: int = -500,
     subtitle_style: dict[str, Any] | None = None,
     timing_segments: list[dict[str, Any]] | None = None,
     subtitle_source_start: float = 0.0,
 ) -> tuple[bool, str]:
-    if not subtitle_path.exists():
-        return False, f"Subtitle file missing: {subtitle_path}"
-
-    def _count_track_items(track_type: str) -> int:
-        total = 0
-        track_count = _safe_call(timeline, "GetTrackCount", track_type, default=0)
-        try:
-            count_i = int(track_count)
-        except Exception:
-            count_i = 0
-        for i in range(1, count_i + 1):
-            items = _safe_call(timeline, "GetItemListInTrack", track_type, i, default=[])
-            total += len(items or [])
-        return total
-
-    def _count_subtitle_items() -> int:
-        return _count_track_items("subtitle")
-
-    def _count_video_items() -> int:
-        return _count_track_items("video")
-
-    before_count = _count_subtitle_items()
-    before_video_count = _count_video_items()
-    _safe_call(project, "SetCurrentTimeline", timeline)
-    _safe_call(media_pool, "SetCurrentTimeline", timeline)
-
-    def _find_template_item_by_name(root_folder: Any, wanted_name: str) -> Any | None:
-        target = wanted_name.strip().lower()
-
-        def _walk(folder: Any) -> list[Any]:
-            out: list[Any] = []
-            out.extend(_safe_call(folder, "GetClipList", default=[]) or [])
-            for sub in _safe_call(folder, "GetSubFolderList", default=[]) or []:
-                out.extend(_walk(sub))
-            return out
-
-        for clip in _walk(root_folder):
-            name = str(_safe_call(clip, "GetName", default="") or "").strip()
-            if name.lower() == target:
-                return clip
-        return None
-
-    def _ensure_standalone_caption_template() -> tuple[Any | None, str]:
-        root_folder = _safe_call(media_pool, "GetRootFolder")
-        if root_folder is None:
-            return None, "Media Pool root folder not available"
-
-        wanted = str(template_name or "").strip()
-        is_auto = wanted == "" or wanted == SUBTITLE_TEMPLATE_AUTO_LABEL
-        existing = None
-        if not is_auto:
-            existing = _find_template_item_by_name(root_folder, wanted)
-        if existing is None:
-            existing = _find_template_item_by_name(root_folder, STANDALONE_CAPTION_TEMPLATE_NAME)
-        if existing is None:
-            existing = _find_template_item_by_name(root_folder, STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME)
-        if existing is not None:
-            _log("standalone_template_found")
-            return existing, "template_found"
-
-        drb_path = (_repo_root() / "resolve_integration" / "assets" / "shorteditor-caption-bin.drb").resolve()
-        if not drb_path.exists():
-            return None, f"Standalone caption template asset missing: {drb_path}"
-
-        imported = _safe_call(media_pool, "ImportFolderFromFile", str(drb_path), default=False)
-        if not imported:
-            return None, f"Failed to import standalone caption template folder: {drb_path.name}"
-        _log(f"standalone_template_imported_from={drb_path}")
-
-        root_folder = _safe_call(media_pool, "GetRootFolder")
-        if root_folder is None:
-            return None, "Media Pool root folder unavailable after template import"
-        loaded = None
-        if not is_auto:
-            loaded = _find_template_item_by_name(root_folder, wanted)
-        if loaded is None:
-            loaded = _find_template_item_by_name(root_folder, STANDALONE_CAPTION_TEMPLATE_NAME)
-        if loaded is None:
-            loaded = _find_template_item_by_name(root_folder, STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME)
-        if loaded is None:
-            return None, (
-                f"Template '{wanted or STANDALONE_CAPTION_TEMPLATE_NAME}'/'{STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME}' "
-                f"not found after importing {drb_path.name}"
-            )
-        return loaded, "template_imported"
-
-    def _parse_srt_segments(path: Path) -> list[dict[str, Any]]:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except Exception:
-            return []
-        blocks = re.split(r"\r?\n\r?\n+", text.strip())
-        segs: list[dict[str, Any]] = []
-        ts_re = re.compile(
-            r"(?P<s>\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(?P<e>\d{2}:\d{2}:\d{2},\d{3})"
-        )
-
-        def _ts_to_sec(ts: str) -> float:
-            hh, mm, rest = ts.split(":")
-            ss, ms = rest.split(",")
-            return int(hh) * 3600 + int(mm) * 60 + int(ss) + int(ms) / 1000.0
-
-        for block in blocks:
-            lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
-            if len(lines) < 2:
-                continue
-            m = ts_re.search(lines[1] if lines[0].isdigit() else lines[0])
-            if not m:
-                continue
-            text_lines = lines[2:] if lines[0].isdigit() else lines[1:]
-            caption = "\n".join(text_lines).strip()
-            if not caption:
-                continue
-            start = _ts_to_sec(m.group("s"))
-            end = _ts_to_sec(m.group("e"))
-            if end <= start:
-                continue
-            segs.append({"start": start, "end": end, "text": caption})
-        return segs
-
-    def _parse_hex_color(value: str) -> tuple[float, float, float] | None:
-        raw = str(value or "").strip()
-        if raw.startswith("#"):
-            raw = raw[1:]
-        if len(raw) != 6 or not re.fullmatch(r"[0-9a-fA-F]{6}", raw):
-            return None
-        return (int(raw[0:2], 16) / 255.0, int(raw[2:4], 16) / 255.0, int(raw[4:6], 16) / 255.0)
-
-    def _set_tool_input_any(tool: Any, names: list[str], value: Any) -> bool:
-        for name in names:
-            if bool(_safe_call(tool, "SetInput", name, value, default=False)):
-                return True
-        return False
-
-    def _apply_textplus_style(tool: Any, style: dict[str, Any]) -> int:
-        applied = 0
-        font = str(style.get("font", "")).strip()
-        font_style = str(style.get("font_style", "")).strip()
-        font_size = style.get("font_size")
-        color = _parse_hex_color(str(style.get("color", "")))
-        pos_x = style.get("position_x")
-        pos_y = style.get("position_y")
-        if font and _set_tool_input_any(tool, ["Font"], font):
-            applied += 1
-        if font_style and _set_tool_input_any(tool, ["Style", "FontStyle"], font_style):
-            applied += 1
-        if font_size is not None and _set_tool_input_any(tool, ["Size"], _coerce_float(font_size, 0.085, 0.01, 0.5)):
-            applied += 1
-        if color is not None:
-            r, g, b = color
-            color_applied = 0
-            if _set_tool_input_any(tool, ["Red1", "Red"], r):
-                color_applied += 1
-            if _set_tool_input_any(tool, ["Green1", "Green"], g):
-                color_applied += 1
-            if _set_tool_input_any(tool, ["Blue1", "Blue"], b):
-                color_applied += 1
-            if _set_tool_input_any(tool, ["Alpha1", "Alpha"], 1.0):
-                color_applied += 1
-            if color_applied <= 0 and _set_tool_input_any(tool, ["Color", "TextColor"], {1: r, 2: g, 3: b, 4: 1.0}):
-                color_applied += 1
-            applied += color_applied
-        if pos_x is not None and pos_y is not None:
-            x = _coerce_float(pos_x, 0.5, 0.0, 1.0)
-            y = _coerce_float(pos_y, 0.82, 0.0, 1.0)
-            if _set_tool_input_any(tool, ["Center", "Position"], {1: x, 2: y}):
-                applied += 1
-            elif _set_tool_input_any(tool, ["Center", "Position"], [x, y]):
-                applied += 1
-        return applied
-
-    def _set_textplus_item_text(timeline_item: Any, text_value: str) -> tuple[bool, int]:
-        comp_count = _safe_call(timeline_item, "GetFusionCompCount", default=0) or 0
-        try:
-            count_i = int(comp_count)
-        except Exception:
-            count_i = 0
-        if count_i <= 0:
-            return False, 0
-        comp = _safe_call(timeline_item, "GetFusionCompByIndex", 1, default=None)
-        if comp is None:
-            return False, 0
-        tools = _safe_call(comp, "GetToolList", False, "TextPlus", default=None)
-        if not isinstance(tools, dict) or not tools:
-            tools = _safe_call(comp, "GetToolList", default={}) or {}
-        for _, tool in tools.items():
-            ok = bool(_safe_call(tool, "SetInput", "StyledText", text_value, default=False))
-            ok = ok or bool(_safe_call(tool, "SetInput", "Text", text_value, default=False))
-            if ok:
-                style_count = _apply_textplus_style(tool, subtitle_style or {}) if subtitle_style else 0
-                return True, style_count
-        return False, 0
-
-    segments = _parse_srt_segments(subtitle_path)
-    if not segments:
-        return False, "SRT has no valid subtitle segments"
-
-    template_item, template_status = _ensure_standalone_caption_template()
-    if template_item is None:
-        return False, template_status
-
-    frame_rate_raw = _safe_call(timeline, "GetSetting", "timelineFrameRate", default="60")
-    fps = _parse_fps_text(frame_rate_raw) or 60.0
-    timeline_start = _safe_call(timeline, "GetStartFrame", default=0) or 0
-    try:
-        tl_start_i = int(timeline_start)
-    except Exception:
-        tl_start_i = 0
-    track_count = _safe_call(timeline, "GetTrackCount", "video", default=1)
-    try:
-        track_idx = max(1, int(track_count) + 1)
-    except Exception:
-        track_idx = 2
-    _safe_call(timeline, "AddTrack", "video")
-
-    clip_list: list[dict[str, Any]] = []
-    time_offset = float(offset_ms) / 1000.0
-    _log(f"subtitle_textplus_offset_applied_ms={offset_ms}")
-
-    def _timeline_ranges_for_subtitle(seg: dict[str, Any]) -> list[tuple[float, float]]:
-        if not timing_segments:
-            return [(float(seg["start"]), float(seg["end"]))]
-        source_start = float(subtitle_source_start) + float(seg["start"])
-        source_end = float(subtitle_source_start) + float(seg["end"])
-        out: list[tuple[float, float]] = []
-        for timing in timing_segments:
-            try:
-                ts = float(timing.get("source_start", 0.0))
-                te = float(timing.get("source_end", ts))
-                record = float(timing.get("timeline_start", 0.0))
-            except Exception:
-                continue
-            left = max(source_start, ts)
-            right = min(source_end, te)
-            if right <= left:
-                continue
-            out.append((record + (left - ts), record + (right - ts)))
-        return out
-
-    text_segments: list[dict[str, Any]] = []
-    for seg in segments:
-        for start_s, end_s in _timeline_ranges_for_subtitle(seg):
-            if end_s <= start_s:
-                continue
-            text_segments.append({"start": start_s, "end": end_s, "text": str(seg.get("text", ""))})
-    if timing_segments:
-        _log(f"subtitle_textplus_timing_remap segments={len(timing_segments)} captions={len(segments)} placed={len(text_segments)}")
-    if not text_segments:
-        return False, "No subtitle segments matched the cut timeline"
-
-    for seg in text_segments:
-        shifted_start = max(0.0, float(seg["start"]) + time_offset)
-        shifted_end = max(shifted_start + 0.05, float(seg["end"]) + time_offset)
-        seg_start = int(round(shifted_start * fps))
-        seg_end = int(round(shifted_end * fps))
-        if seg_end <= seg_start:
-            seg_end = seg_start + 1
-        clip_list.append(
-            {
-                "mediaPoolItem": template_item,
-                "startFrame": 0,
-                "endFrame": max(1, seg_end - seg_start),
-                "trackIndex": track_idx,
-                "recordFrame": tl_start_i + seg_start,
-            }
-        )
-
-    appended = _safe_call(media_pool, "AppendToTimeline", clip_list, default=None)
-    if not isinstance(appended, list) or not appended:
-        return False, "Failed to append standalone Text+ subtitle clips to timeline"
-
-    applied = 0
-    style_applied = 0
-    for i, it in enumerate(appended):
-        txt = str(text_segments[i].get("text", "")) if i < len(text_segments) else ""
-        ok_text, style_count = _set_textplus_item_text(it, txt) if txt else (False, 0)
-        if ok_text:
-            applied += 1
-            if style_count > 0:
-                style_applied += 1
-
-    after_count = _count_subtitle_items()
-    after_video = _count_video_items()
-    _log(
-        f"subtitle_textplus_apply template={STANDALONE_CAPTION_TEMPLATE_NAME} status={template_status} "
-        f"applied={applied}/{len(text_segments)} style_applied={style_applied}/{applied} subtitle_tracks_before={before_count} subtitle_tracks_after={after_count} "
-        f"video_items_before={before_video_count} video_items_after={after_video}"
+    return _textplus.import_subtitles_to_timeline(
+        project,
+        media_pool,
+        timeline,
+        subtitle_segments,
+        _repo_root(),
+        template_name,
+        SUBTITLE_TEMPLATE_AUTO_LABEL,
+        STANDALONE_CAPTION_TEMPLATE_NAME,
+        STANDALONE_CAPTION_TEMPLATE_FALLBACK_NAME,
+        offset_ms,
+        subtitle_style,
+        timing_segments,
+        subtitle_source_start,
+        _safe_call,
+        _log,
+        _coerce_float,
+        _parse_fps_text,
     )
-
-    if applied <= 0:
-        return False, "Text+ clips appended but text injection failed"
-    suffix = f", style {style_applied}/{applied}" if subtitle_style else ""
-    return True, f"Subtitles applied via standalone Text+ ({applied}/{len(text_segments)}{suffix})"
 
 
 def _plan_key(plan: ClipPlan) -> str:
-    return plan.clip_id
+    return _plan_key_impl(plan)
 
 
 def _safe_name_token(text: str, limit: int = 72) -> str:
-    forbidden = set('\\/:*?"<>|')
-    cleaned = "".join(ch if (ch.isalnum() or ch in "-_ ") and ch not in forbidden else " " for ch in text)
-    cleaned = " ".join(cleaned.split())
-    if not cleaned:
-        cleaned = "clip"
-    return cleaned[:limit]
+    return _safe_name_token_impl(text, limit)
 
 
 def _build_from_manifest(
@@ -4724,215 +1796,88 @@ def _build_from_manifest(
     subtitle_template_name: str = SUBTITLE_TEMPLATE_AUTO_LABEL,
     subtitle_offset_ms: int = -500,
     subtitle_style: dict[str, Any] | None = None,
+    subtitle_captions_cfg: dict[str, Any] | None = None,
     progress_cb: Any | None = None,
 ) -> tuple[str, dict[str, ClipPlan], list[Any], list[str]]:
-    batch_id, plans = _parse_manifest(manifest_path)
+    _cfg = _load_pipeline_config(root)
 
-    max_clip_seconds = int(selected_preset.get("max_clip_seconds", 45))
-    if transcript_query.strip():
-        plans = _filter_plans_by_transcript_query(root, plans, transcript_query, max_clip_seconds)
-        _log(f"Transcript query filtered plans to {len(plans)} clip(s)")
+    # Build a source_remap: original VOD → clean VOD with only the desired audio track.
+    # ffmpeg stream-copies video + one audio stream so this finishes in seconds.
+    _source_remap: dict[str, Path] | None = None
+    _vod_for_clean: Path | None = detected_vod_path if (detected_vod_path and detected_vod_path.exists()) else None
+    if _vod_for_clean is None:
+        try:
+            _mdata = _read_manifest_safe(manifest_path) or {}
+            _fp = str((_mdata.get("meta") or {}).get("source_vod_path") or "")
+            if not _fp:
+                _vods = _mdata.get("source_vods") or []
+                _fp = str(_vods[0]) if _vods else ""
+            if _fp and Path(_fp).exists():
+                _vod_for_clean = Path(_fp)
+        except Exception:
+            pass
+    if _vod_for_clean is not None:
+        _clean_vod = _ensure_clean_vod(root, _vod_for_clean, _cfg, progress_cb)
+        if _clean_vod is not None:
+            _source_remap = {str(_vod_for_clean).lower(): _clean_vod}
+            _log(f"source_remap: {_vod_for_clean.name} → {_clean_vod.name}")
 
-    if not plans:
-        return batch_id, {}, [], ["No valid clip plans in manifest."]
-
-    _ensure_vertical_project_settings(project)
-    _ensure_batch_folder(media_pool, batch_id)
-    playback_ok = _ensure_playback_fps_60(project)
-    project_fps = _fps_from_project(project)
-    playback_fps = _safe_int_from_project_setting(project, "timelinePlaybackFrameRate", DEFAULT_FPS)
-    _log(f"project_playback_diag timelineFrameRate={project_fps} timelinePlaybackFrameRate={playback_fps}")
-
-    created_timelines: list[Any] = []
-    warnings: list[str] = []
-    if not playback_ok or playback_fps != 60:
-        warnings.append(
-            f"Resolve playback frame rate is {playback_fps} (expected 60). Preview may appear slowed/choppy until project playback is set to 60 fps."
-        )
-    plan_map: dict[str, ClipPlan] = {}
-    resolved_source_by_clip: dict[str, Path] = {}
-    source_fps_by_clip: dict[str, float] = {}
-    source_fps_cache: dict[str, float] = {}
-    used_timeline_names: set[str] = set()
-    remap_notices: set[str] = set()
-    subtitle_eligible = 0
-    subtitle_imported = 0
-
-    def _resolve_existing_source(raw_source_path: str) -> Path | None:
-        src = Path(raw_source_path)
-        if not src.is_absolute():
-            src = (root / src).resolve()
-        if src.exists():
-            return src
-
-        file_name = src.name
-        if detected_vod_path is not None and detected_vod_path.exists():
-            remap_notices.add(f"Manifest source missing, remapped to selected Resolve clip: {detected_vod_path}")
-            return detected_vod_path
-
-        if user_vod_dir is not None and user_vod_dir.exists():
-            direct = user_vod_dir / file_name
-            if direct.exists():
-                remap_notices.add(f"Manifest source missing, remapped from VOD folder: {direct}")
-                return direct
-            matches = list(user_vod_dir.rglob(file_name))
-            if len(matches) == 1 and matches[0].exists():
-                remap_notices.add(f"Manifest source missing, remapped from VOD folder: {matches[0]}")
-                return matches[0]
-            if len(matches) > 1:
-                warnings.append(f"Multiple candidates for missing source '{file_name}' in VOD folder: {user_vod_dir}")
-        return None
-
-    total_plans = max(1, len(plans))
-    if callable(progress_cb):
-        progress_cb("Batch", 0, total_plans, "Preparation timelines")
-
-    for idx_plan, plan in enumerate(plans, start=1):
-        src = _resolve_existing_source(plan.source_path)
-        if src is None:
-            raw_src = Path(plan.source_path)
-            if not raw_src.is_absolute():
-                raw_src = (root / raw_src).resolve()
-            warnings.append(f"Missing source file: {raw_src}")
-            if callable(progress_cb):
-                progress_cb("Batch", idx_plan, total_plans, f"Skip source manquante {idx_plan}/{total_plans}")
-            continue
-        if not src.exists():
-            warnings.append(f"Missing source file: {src}")
-            if callable(progress_cb):
-                progress_cb("Batch", idx_plan, total_plans, f"Skip source absente {idx_plan}/{total_plans}")
-            continue
-
-        item = _ensure_media_item(media_pool, src)
-        if item is None:
-            warnings.append(f"Could not import media: {src}")
-            if callable(progress_cb):
-                progress_cb("Batch", idx_plan, total_plans, f"Skip import media {idx_plan}/{total_plans}")
-            continue
-
-        source_key = str(src.resolve()).lower()
-        source_fps = source_fps_cache.get(source_key)
-        if source_fps is None:
-            source_fps = _source_fps_for_media_item(item, src, project_fps)
-            source_fps_cache[source_key] = source_fps
-        start_frame = int(round(plan.start_seconds * source_fps))
-        end_frame = int(round(plan.end_seconds * source_fps))
-        if end_frame <= start_frame:
-            warnings.append(f"Invalid range for {plan.clip_id}")
-            if callable(progress_cb):
-                progress_cb("Batch", idx_plan, total_plans, f"Skip range invalide {idx_plan}/{total_plans}")
-            continue
-        _log(
-            f"clip_frame_map clip={plan.clip_id} project_fps={project_fps} source_fps={source_fps:.3f} "
-            f"start_s={plan.start_seconds:.3f} end_s={plan.end_seconds:.3f} start_f={start_frame} end_f={end_frame}"
+    def _create_timeline_with_mute(
+        project: Any,
+        media_pool: Any,
+        name: str,
+        media_item: Any,
+        start_frame: int,
+        end_frame: int,
+        preset: dict[str, Any],
+    ) -> Any | None:
+        return _create_timeline_for_clip_with_preset(
+            project, media_pool, name, media_item, start_frame, end_frame, preset,
         )
 
-        timeline_name = str(plan.timeline_name or "").strip()
-        if not timeline_name:
-            display = _safe_name_token(plan.display_name or plan.clip_id, limit=84)
-            timeline_name = f"{batch_id}__{display}"
-        if timeline_name in used_timeline_names:
-            dup_idx = 2
-            base_name = timeline_name
-            while f"{base_name} ({dup_idx})" in used_timeline_names:
-                dup_idx += 1
-            timeline_name = f"{base_name} ({dup_idx})"
-        used_timeline_names.add(timeline_name)
-        _delete_timeline_if_exists(project, media_pool, timeline_name)
-        tl = _create_timeline_for_clip_with_preset(project, media_pool, timeline_name, item, start_frame, end_frame, selected_preset)
-        if tl is None:
-            warnings.append(f"Could not create timeline for {plan.clip_id}")
-            if callable(progress_cb):
-                progress_cb("Batch", idx_plan, total_plans, f"Echec timeline {idx_plan}/{total_plans}")
-            continue
-
-        expected_duration_s = max(0.0, plan.end_seconds - plan.start_seconds)
-        preset_mode = str(selected_preset.get("mode", "single"))
-        _log_timeline_diagnostics(tl, plan, expected_duration_s, preset_mode)
-
-        if plan.subtitle_path:
-            subtitle_eligible += 1
-            sub_path = Path(plan.subtitle_path)
-            if not sub_path.is_absolute():
-                sub_path = (root / sub_path).resolve()
-            if not sub_path.exists():
-                warnings.append(f"Subtitle file missing for timeline import: {plan.clip_id}")
-                _log(f"subtitle_timeline_missing clip={plan.clip_id} path={sub_path}")
-            else:
-                ok_sub, sub_msg = _import_subtitles_to_timeline(
-                    project,
-                    media_pool,
-                    tl,
-                    sub_path,
-                    template_name=subtitle_template_name,
-                    offset_ms=subtitle_offset_ms,
-                    subtitle_style=subtitle_style,
-                )
-                if ok_sub:
-                    subtitle_imported += 1
-                    _log(f"subtitle_timeline_import_ok clip={plan.clip_id} msg={sub_msg}")
-                    _log_timeline_diagnostics(tl, plan, expected_duration_s, preset_mode + "+sub")
-                else:
-                    warnings.append(f"Subtitle timeline import failed for {plan.clip_id}: {sub_msg}")
-                    _log(f"subtitle_timeline_import_failed clip={plan.clip_id} msg={sub_msg}")
-            if callable(progress_cb):
-                progress_cb(
-                    "Application sous-titres",
-                    subtitle_imported,
-                    max(1, subtitle_eligible),
-                    f"Sous-titres timeline {subtitle_imported}/{max(1, subtitle_eligible)}",
-                )
-        elif require_subtitles:
-            warnings.append(f"Subtitle missing in manifest for {plan.clip_id}")
-
-        created_timelines.append(tl)
-        plan_map[_plan_key(plan)] = plan
-        resolved_source_by_clip[_plan_key(plan)] = src
-        source_fps_by_clip[_plan_key(plan)] = source_fps
-        if callable(progress_cb):
-            progress_cb("Batch", idx_plan, total_plans, f"Timeline {idx_plan}/{total_plans}")
-
-    master_tl = None
-    if created_timelines:
-        master_name = f"{batch_id}__MASTER_REVIEW"
-        _delete_timeline_if_exists(project, media_pool, master_name)
-        master_tl = _safe_call(media_pool, "CreateEmptyTimeline", master_name)
-        if master_tl:
-            for plan in plans:
-                src = resolved_source_by_clip.get(_plan_key(plan))
-                item = _ensure_media_item(media_pool, src) if src and src.exists() else None
-                if not item:
-                    continue
-                source_fps = source_fps_by_clip.get(_plan_key(plan), float(max(1, project_fps)))
-                start_frame = int(round(plan.start_seconds * source_fps))
-                end_frame = int(round(plan.end_seconds * source_fps))
-                if end_frame <= start_frame:
-                    continue
-                _append_clip_range(media_pool, master_tl, item, start_frame, end_frame, track_index=1)
-
-    if queue_render:
-        queued = 0
-        for tl in created_timelines:
-            if _queue_render_job(project, tl, output_dir, preset_name):
-                queued += 1
-        if render_master and master_tl and _queue_render_job(project, master_tl, output_dir, preset_name):
-            queued += 1
-        _log(f"Queued render jobs: {queued}")
-
-    for notice in sorted(remap_notices):
-        warnings.append(notice)
-
-    if require_subtitles:
-        if subtitle_eligible == 0:
-            warnings.append("No subtitle files were available in manifest for this batch.")
-        elif subtitle_imported == 0:
-            warnings.append("Subtitle import did not succeed on any timeline.")
-        _log(f"subtitle_import_summary eligible={subtitle_eligible} imported={subtitle_imported}")
-
-    if callable(progress_cb):
-        progress_cb("Batch", total_plans, total_plans, "Batch termine")
-
-    return batch_id, plan_map, created_timelines, warnings
+    deps = _BatchBuildDeps(
+        log=_log,
+        load_pipeline_config=_load_pipeline_config,
+        transcript_path_for_vod=_transcript_path_for_vod,
+        ensure_vertical_project_settings=_ensure_vertical_project_settings,
+        ensure_batch_folder=_ensure_batch_folder,
+        ensure_playback_fps_60=_ensure_playback_fps_60,
+        fps_from_project=_fps_from_project,
+        safe_int_from_project_setting=_safe_int_from_project_setting,
+        ensure_media_item=_ensure_media_item,
+        source_fps_for_media_item=_source_fps_for_media_item,
+        delete_timeline_if_exists=_delete_timeline_if_exists,
+        create_timeline_for_clip_with_preset=_create_timeline_with_mute,
+        log_timeline_diagnostics=_log_timeline_diagnostics,
+        import_subtitles_to_timeline=_import_subtitles_to_timeline,
+        append_clip_range=_append_clip_range,
+        queue_render_job=_queue_render_job,
+        safe_call=_safe_call,
+        default_fps=DEFAULT_FPS,
+    )
+    return _batch_builder.build_from_manifest(
+        root,
+        project,
+        media_pool,
+        manifest_path,
+        output_dir,
+        preset_name,
+        selected_preset,
+        transcript_query,
+        render_master,
+        queue_render,
+        deps,
+        _overlap_ratio_from_ranges,
+        detected_vod_path=detected_vod_path,
+        user_vod_dir=user_vod_dir,
+        require_subtitles=require_subtitles,
+        subtitle_template_name=subtitle_template_name,
+        subtitle_offset_ms=subtitle_offset_ms,
+        subtitle_style=subtitle_style,
+        subtitle_captions_cfg=subtitle_captions_cfg,
+        progress_cb=progress_cb,
+        source_remap=_source_remap,
+    )
 
 
 def run() -> int:
@@ -4941,307 +1886,21 @@ def run() -> int:
     _log(f"Starting Resolve batch script. Root={root}")
     resolve = None
 
-    loading_root = None
-    loading_text = None
-    loading_step_text = None
-    loading_percent_text = None
-    loading_progress_canvas = None
-    loading_progress_fill = None
-    loading_progress_value = 0
-    loading_text_canvas = None
-    loading_text_items: list[Any] = []
-    text_wave_job = None
-    text_wave_index = 0
-    loading_image_label = None
-    loading_mode = "text"
-    loader_closing = False
-    frame_job = None
-    phase_job = None
-    anim_frames: dict[str, list[Any]] = {"idle": [], "suck": [], "digest": [], "dance": []}
-    anim_state = {"name": "", "idx": 0, "loop": True}
-    try:
-        import tkinter as tk
-
-        loading_root = tk.Tk()
-        loading_root.title("Short Editor")
-        loading_root.geometry("500x156")
-        loading_root.configure(bg="#E7ECFF")
-        loading_root.attributes("-topmost", True)
-        loading_text = tk.StringVar(value="Kirby eats your VOD...")
-        text_message = "Kirby eats your VOD..."
-        loading_text_canvas = tk.Canvas(loading_root, width=440, height=40, bg="#E7ECFF", highlightthickness=0, bd=0)
-        loading_text_canvas.pack(pady=(8, 2))
-        loading_image_label = tk.Label(loading_root, bg="#E7ECFF")
-        loading_image_label.pack(pady=(2, 4))
-
-        assets = _assets_dir(root)
-        anim_frames["idle"] = _load_gif_frames(tk, assets / "kirby_idle.gif")
-        anim_frames["suck"] = _load_gif_frames(tk, assets / "kirby_suck.gif")
-        anim_frames["digest"] = _load_gif_frames(tk, assets / "kirby_digest.gif")
-        anim_frames["dance"] = _load_gif_frames(tk, assets / "kirby_dance.gif")
-        if anim_frames["idle"] and anim_frames["suck"] and anim_frames["digest"] and anim_frames["dance"]:
-            loading_mode = "gif"
-            _log("kirby_loader_start")
-        else:
-            _log("kirby_loader_fallback_text_mode")
-        tk.Label(
-            loading_root,
-            text="Short Editor",
-            bg="#E7ECFF",
-            fg="#6D4DFF",
-            font=("Segoe UI", 12, "bold"),
-        ).pack(pady=(8, 2))
-        loading_step_text = tk.StringVar(value="Step: Initializing")
-        loading_percent_text = tk.StringVar(value="0%")
-        tk.Label(
-            loading_root,
-            textvariable=loading_step_text,
-            bg="#E7ECFF",
-            fg="#1E1E2A",
-            font=("Segoe UI", 9, "bold"),
-        ).pack(pady=(0, 1))
-        tk.Label(
-            loading_root,
-            textvariable=loading_percent_text,
-            bg="#E7ECFF",
-            fg="#6D4DFF",
-            font=("Segoe UI", 9, "bold"),
-        ).pack(pady=(0, 3))
-
-        loading_progress_canvas = tk.Canvas(loading_root, width=360, height=16, bg="#E7ECFF", highlightthickness=0, bd=0)
-        loading_progress_canvas.pack(pady=(0, 6))
-        loading_progress_canvas.create_rectangle(2, 2, 358, 14, fill="#FFF3B3", outline="#7E69D9", width=1)
-        loading_progress_fill = loading_progress_canvas.create_rectangle(3, 3, 3, 13, fill="#6D4DFF", outline="#6D4DFF", width=0)
-        _log("loader_bar_canvas_init_ok")
-
-        def _loader_alive() -> bool:
-            if loading_root is None:
-                return False
-            try:
-                return bool(loading_root.winfo_exists())
-            except Exception:
-                return False
-
-        def build_text_wave_items(message: str) -> None:
-            nonlocal loading_text_items
-            if loading_text_canvas is None:
-                return
-            loading_text_canvas.delete("all")
-            loading_text_items = []
-            x = 16
-            for ch in message:
-                item = loading_text_canvas.create_text(
-                    x,
-                    18,
-                    text=ch,
-                    fill="#FF6FAE",
-                    font=("Segoe UI", 16, "bold"),
-                    anchor="w",
-                )
-                loading_text_items.append(item)
-                x += 10 if ch != " " else 8
-
-        def animate_text_wave() -> None:
-            nonlocal text_wave_job, text_wave_index
-            if loading_text_canvas is None or not loading_text_items:
-                return
-            if not _loader_alive():
-                return
-            base_y = 18
-            non_space_indices = [i for i, ch in enumerate(text_message) if ch != " "]
-            if not non_space_indices:
-                return
-            active = non_space_indices[text_wave_index % len(non_space_indices)]
-            for idx, item in enumerate(loading_text_items):
-                lift = 0.0
-                if idx == active:
-                    lift = 6.0
-                elif idx == active - 1 or idx == active + 1:
-                    lift = 2.0
-                y = base_y - lift
-                coords = loading_text_canvas.coords(item)
-                if len(coords) >= 2:
-                    loading_text_canvas.coords(item, coords[0], y)
-            text_wave_index += 1
-            text_wave_job = loading_root.after(95, animate_text_wave)
-
-        build_text_wave_items(text_message)
-        animate_text_wave()
-        loading_root.update_idletasks()
-        loading_root.update()
-
-        def animate_tick() -> None:
-            nonlocal frame_job
-            if loading_image_label is None:
-                return
-            if not _loader_alive():
-                return
-            name = anim_state["name"]
-            frames = anim_frames.get(name, [])
-            if not frames:
-                return
-            if name == "digest":
-                idx = min(anim_state["idx"], len(frames) - 1)
-            else:
-                idx = anim_state["idx"] % len(frames)
-            loading_image_label.configure(image=frames[idx])
-            loading_image_label.image = frames[idx]
-            anim_state["idx"] += 1
-            frame_job = loading_root.after(70, animate_tick)
-
-        def set_anim(name: str) -> None:
-            nonlocal frame_job
-            if loading_mode != "gif" or loading_root is None:
-                return
-            if frame_job is not None:
-                try:
-                    loading_root.after_cancel(frame_job)
-                except Exception:
-                    pass
-            anim_state["name"] = name
-            anim_state["idx"] = 0
-            animate_tick()
-
-        def start_kirby_phase_loop() -> None:
-            nonlocal phase_job
-            if loading_mode != "gif" or loading_root is None:
-                return
-            if not anim_state.get("loop", True):
-                return
-            # idle 3s -> suck 2s -> digest 0.7s -> dance 3s
-            phases = [("idle", 3000), ("suck", 2000), ("digest", 700), ("dance", 3000)]
-
-            def step(index: int) -> None:
-                nonlocal phase_job
-                if not _loader_alive() or not anim_state.get("loop", True):
-                    return
-                phase_name, duration = phases[index % len(phases)]
-                _log(f"loader_phase={phase_name}")
-                set_anim(phase_name)
-                phase_job = loading_root.after(duration, lambda: step(index + 1))
-
-            step(0)
-
-        def stop_phase_loop() -> None:
-            nonlocal phase_job, frame_job, text_wave_job
-            anim_state["loop"] = False
-            root_ref = loading_root
-            if root_ref is None:
-                phase_job = None
-                frame_job = None
-                text_wave_job = None
-                return
-            if phase_job is not None:
-                try:
-                    root_ref.after_cancel(phase_job)
-                except Exception:
-                    pass
-                phase_job = None
-            if frame_job is not None:
-                try:
-                    root_ref.after_cancel(frame_job)
-                except Exception:
-                    pass
-                frame_job = None
-            if text_wave_job is not None:
-                try:
-                    root_ref.after_cancel(text_wave_job)
-                except Exception:
-                    pass
-                text_wave_job = None
-
-        def _safe_destroy_loader() -> None:
-            nonlocal loading_root, loader_closing
-            if loader_closing:
-                return
-            loader_closing = True
-            stop_phase_loop()
-            root_ref = loading_root
-            loading_root = None
-            if root_ref is None:
-                _log("kirby_loader_end")
-                return
-            try:
-                if root_ref.winfo_exists():
-                    root_ref.destroy()
-            except Exception:
-                pass
-            _log("kirby_loader_end")
-
-        def final_dance_then_close() -> None:
-            if not _loader_alive():
-                return
-            _log("loader_final_dance_start")
-            try:
-                set_anim("dance")
-            except Exception:
-                _safe_destroy_loader()
-                return
-
-            def close_now() -> None:
-                _safe_destroy_loader()
-
-            try:
-                if loading_root is not None:
-                    loading_root.after(2000, close_now)
-            except Exception:
-                _safe_destroy_loader()
-
-        loading_root._set_anim = set_anim  # type: ignore[attr-defined]
-        loading_root._start_phase_loop = start_kirby_phase_loop  # type: ignore[attr-defined]
-        loading_root._stop_phase_loop = stop_phase_loop  # type: ignore[attr-defined]
-        loading_root._final_dance_then_close = final_dance_then_close  # type: ignore[attr-defined]
-    except Exception as exc:
-        _log(f"Loading UI disabled: {exc}")
+    loader = _KirbyLoader(root, _log)
+    loading_root = loader.root
 
     def set_loading(msg: str) -> None:
-        _log(msg)
-        if loading_root is not None and loading_text is not None:
-            loading_text.set("Kirby eats your VOD...")
-            loading_root.update_idletasks()
-            loading_root.update()
+        nonlocal loading_root
+        loader.set_loading(msg)
+        loading_root = loader.root
 
     def set_loading_progress(step_label: str, percent: int | None = None, indeterminate: bool = False) -> None:
-        _log(f"loader_step={step_label} percent={percent if percent is not None else 'indeterminate'}")
-        nonlocal loading_progress_value
-        if loading_root is None:
-            return
-        if loading_step_text is not None:
-            loading_step_text.set(f"Step: {step_label}")
-        if loading_percent_text is not None:
-            if percent is None:
-                loading_percent_text.set("...")
-            else:
-                p = max(0, min(100, int(percent)))
-                loading_percent_text.set(f"{p}%")
-        if loading_progress_canvas is not None and loading_progress_fill is not None:
-            try:
-                if percent is None:
-                    if indeterminate:
-                        loading_progress_value = (loading_progress_value + 4) % 100
-                    p = loading_progress_value
-                else:
-                    p = max(0, min(100, int(percent)))
-                    loading_progress_value = p
-                x2 = 3 + int((355 * p) / 100)
-                if x2 < 3:
-                    x2 = 3
-                loading_progress_canvas.coords(loading_progress_fill, 3, 3, x2, 13)
-                _log(f"loader_bar_update percent={p}")
-            except Exception:
-                pass
-        try:
-            loading_root.update_idletasks()
-            loading_root.update()
-        except Exception:
-            pass
+        nonlocal loading_root
+        loader.set_progress(step_label, percent, indeterminate)
+        loading_root = loader.root
 
     def set_loading_anim(name: str) -> None:
-        if loading_root is None:
-            return
-        setter = getattr(loading_root, "_set_anim", None)
-        if callable(setter):
-            setter(name)
+        loader.set_anim(name)
 
     set_loading_progress("Initialisation du loader", 0)
     set_loading("Chargement de l'API Resolve...")
@@ -5256,25 +1915,12 @@ def run() -> int:
         set_loading("Sélectionner le fichier VOD...")
         set_loading_progress("En attente de sélection VOD", 15)
         auto_vod = _prompt_vod_path_native(root / "input", parent=loading_root)
-        if loading_root is not None:
-            try:
-                loading_root.lift()
-                loading_root.focus_force()
-                loading_root.update_idletasks()
-                loading_root.update()
-                _log("loader_focus_restored_after_picker")
-            except Exception:
-                pass
+        loader.lift_focus()
+        loading_root = loader.root
+        _log("loader_focus_restored_after_picker")
     if auto_vod is None:
-        if loading_root is not None:
-            stopper = getattr(loading_root, "_stop_phase_loop", None)
-            if callable(stopper):
-                stopper()
-            try:
-                loading_root.destroy()
-            except Exception:
-                pass
-            loading_root = None
+        loader.destroy()
+        loading_root = loader.root
         raise RuntimeError("Aucune VOD sélectionnée. Sélectionne une VOD pour continuer.")
 
     manifest_result: dict[str, Any] = {"manifest": None, "error": None}
@@ -5285,14 +1931,8 @@ def run() -> int:
     if existing_manifest is not None:
         set_loading("Ancien batch détecté...")
         set_loading_progress("Confirmation réouverture", 18)
-        if loading_root is not None:
-            try:
-                loading_root.lift()
-                loading_root.focus_force()
-                loading_root.update_idletasks()
-                loading_root.update()
-            except Exception:
-                pass
+        loader.lift_focus()
+        loading_root = loader.root
         if _ask_reopen_existing_batch(existing_manifest, parent=loading_root):
             default_manifest = existing_manifest
             reopened_existing_manifest = True
@@ -5305,9 +1945,7 @@ def run() -> int:
     if not reopened_existing_manifest:
         set_loading("Génération du manifest...")
         set_loading_progress("Génération du manifest", 20)
-        starter = getattr(loading_root, "_start_phase_loop", None)
-        if callable(starter):
-            starter()
+        loader.start_phase_loop()
 
         def _manifest_worker() -> None:
             try:
@@ -5329,12 +1967,8 @@ def run() -> int:
         while worker.is_alive():
             pseudo_progress = min(82, pseudo_progress + 1)
             set_loading_progress("Génération du manifest", pseudo_progress)
-            if loading_root is not None:
-                try:
-                    loading_root.update_idletasks()
-                    loading_root.update()
-                except Exception:
-                    pass
+            loader.pump_once()
+            loading_root = loader.root
             time.sleep(0.03)
         if manifest_result["error"] is not None:
             err = manifest_result["error"]
@@ -5342,15 +1976,8 @@ def run() -> int:
             _log(err.get("traceback", ""))
             fallback_manifest = _latest_manifest(root / "output" / "manifests")
             if fallback_manifest is None:
-                if loading_root is not None:
-                    stopper = getattr(loading_root, "_stop_phase_loop", None)
-                    if callable(stopper):
-                        stopper()
-                    try:
-                        loading_root.destroy()
-                    except Exception:
-                        pass
-                    loading_root = None
+                loader.destroy()
+                loading_root = loader.root
                 raise RuntimeError(f"Échec de génération du manifest et aucun manifest de secours trouvé: {err.get('message', err)}")
             default_manifest = fallback_manifest
             used_manifest_fallback = True
@@ -5361,34 +1988,15 @@ def run() -> int:
             default_manifest = manifest_result["manifest"]
     set_loading("Manifest prêt !")
     set_loading_progress("Manifest prêt", 92)
-    finalizer = getattr(loading_root, "_final_dance_then_close", None)
-    if callable(finalizer):
+    if loader.alive():
         set_loading_progress("Finalisation", 97)
-        finalizer()
-        # keep pumping UI until loader closes
-        while loading_root is not None:
-            try:
-                if not loading_root.winfo_exists():
-                    break
-            except Exception:
-                break
-            try:
-                loading_root.update_idletasks()
-                loading_root.update()
-            except Exception:
-                break
-            time.sleep(0.03)
+        loader.final_dance_then_close()
+        loader.pump_until_closed()
+        loading_root = loader.root
     elif loading_root is not None:
         set_loading_progress("Terminé", 100)
-        stopper = getattr(loading_root, "_stop_phase_loop", None)
-        if callable(stopper):
-            stopper()
-        try:
-            loading_root.destroy()
-        except Exception:
-            pass
-        loading_root = None
-        _log("kirby_loader_end")
+        loader.destroy()
+        loading_root = loader.root
     _log(f"Default manifest: {default_manifest}")
 
     project_manager = _safe_call(resolve, "GetProjectManager", required=True)
@@ -5410,267 +2018,48 @@ def run() -> int:
         "use_transcript_for_selection": False,
     }
 
+    session_action_deps = _session_actions.SessionActionDeps(
+        read_manifest_safe=_read_manifest_safe,
+        default_subtitle_presets=_default_subtitle_presets,
+        subtitle_style_from_preset=_subtitle_style_from_preset,
+        merge_subtitle_preset_into_config=_merge_subtitle_preset_into_config,
+        load_pipeline_config=_load_pipeline_config,
+        manifest_has_valid_subtitles=_manifest_has_valid_subtitles,
+        apply_preview_safe_playback=_apply_preview_safe_playback,
+        transcript_path_for_vod=_transcript_path_for_vod,
+        find_reusable_quality_manifest=_find_reusable_quality_manifest,
+        generate_manifest_for_vod=_generate_manifest_for_vod,
+        build_from_manifest=_build_from_manifest,
+        log=_log,
+    )
+
     def on_generate(params: dict[str, Any]) -> dict[str, Any] | str:
-        manifest_value = session.get("manifest") or default_manifest
-        if not manifest_value:
-            return {"message": "Aucun manifest disponible. Relance le script pour en régénérer un.", "warnings": []}
-        manifest_path = Path(manifest_value)
-        manifest_data = _read_manifest_safe(manifest_path)
-        output_dir = Path(params["output"])
-        preset_name = str(params["render_preset"])
-        render_master = bool(params["render_master"])
-        preset_id = str(params["preset_id"])
-        subtitle_preset_id = str(params.get("subtitle_preset_id", DEFAULT_SUBTITLE_PRESET_ID) or DEFAULT_SUBTITLE_PRESET_ID)
-        transcript_query = str(params["query"])
-        use_transcript_for_selection = bool(params.get("use_transcript_for_selection", False))
-        strict_manifest = bool(params.get("strict_manifest", False))
-        require_subtitles = bool(params.get("require_subtitles", False))
-        preview_safe_quality = bool(params.get("preview_safe_quality", True))
-        generate_optimized_media_quality = bool(params.get("generate_optimized_media_quality", True))
-        subtitle_template_name = str(params.get("subtitle_template_name", SUBTITLE_TEMPLATE_AUTO_LABEL) or SUBTITLE_TEMPLATE_AUTO_LABEL)
-        try:
-            subtitle_offset_ms = int(float(str(params.get("subtitle_offset_ms", "-500") or "-500")))
-        except Exception:
-            subtitle_offset_ms = -500
-        vod_dir_raw = str(params.get("vod_dir", "")).strip()
-        user_vod_dir = Path(vod_dir_raw) if vod_dir_raw else None
-        detected_vod = session.get("detected_vod")
-        progress_cb = params.get("_progress_cb")
-
-        selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_id, {}))
-        if not selected_preset:
-            return {"message": f"Preset introuvable: {preset_id}", "warnings": []}
-        selected_subtitle_preset = dict((presets_data.get("subtitle_presets", {}) or {}).get(subtitle_preset_id, {}))
-        if not selected_subtitle_preset:
-            selected_subtitle_preset = dict(_default_subtitle_presets()[DEFAULT_SUBTITLE_PRESET_ID])
-            subtitle_preset_id = DEFAULT_SUBTITLE_PRESET_ID
-        subtitle_style = _subtitle_style_from_preset(selected_subtitle_preset)
-
-        if strict_manifest and bool(session.get("used_manifest_fallback", False)):
-            fallback_msg = "Sous-titres auto annulés: la génération du manifest a échoué au démarrage et un manifest de secours est utilisé. Relance le script pour régénérer un manifest frais."
-            _log(f"UI generate blocked (strict manifest): {fallback_msg}")
-            return {"message": fallback_msg, "warnings": [fallback_msg]}
-
-        if require_subtitles:
-            current_meta = manifest_data.get("meta", {}) if isinstance(manifest_data, dict) and isinstance(manifest_data.get("meta", {}), dict) else {}
-            current_subtitle_preset_matches = str(current_meta.get("subtitle_preset_id", "")).strip() == subtitle_preset_id
-            current_has_valid_subtitles = bool(manifest_data and current_subtitle_preset_matches and _manifest_has_valid_subtitles(root, manifest_data))
-            if detected_vod is None or not Path(detected_vod).exists():
-                return {"message": "Les sous-titres auto nécessitent une source VOD détectée. Sélectionne un clip dans Resolve puis relance.", "warnings": []}
-            if preview_safe_quality:
-                if callable(progress_cb):
-                    progress_cb("Batch+sous-titres", 1, 100, "Application du mode aperçu fluide")
-                preview_warnings = _apply_preview_safe_playback(project)
-            else:
-                preview_warnings = []
-            detected_vod_path = Path(detected_vod)
-            reusable_manifest: Path | None = None
-            transcript_path = _transcript_path_for_vod(root, detected_vod_path)
-            transcript_ok = transcript_path.exists()
-            if callable(progress_cb):
-                progress_cb("Batch+sous-titres", 3 if transcript_ok else 1, 100, "Vérification du cache transcript")
-            if not transcript_ok:
-                try:
-                    from short_editor.transcription import ensure_transcript
-
-                    ensure_transcript(detected_vod_path, _load_pipeline_config(root), root / "output" / "transcripts")
-                    transcript_ok = transcript_path.exists()
-                    _log(f"quality_transcript_generated path={transcript_path}")
-                except Exception as exc:
-                    _log(f"quality_transcript_generation_failed err={exc}")
-            else:
-                _log(f"quality_transcript_cache_hit path={transcript_path}")
-
-            if transcript_ok and not current_has_valid_subtitles:
-                reusable_manifest = _find_reusable_quality_manifest(
-                    root,
-                    detected_vod_path,
-                    preset_id,
-                    use_transcript_for_selection,
-                    subtitle_preset_id,
-                )
-                if reusable_manifest is not None:
-                    manifest_path = reusable_manifest
-                    session["manifest"] = manifest_path
-                    session["used_manifest_fallback"] = False
-                    session["use_transcript_for_selection"] = use_transcript_for_selection
-                    _log(f"quality_manifest_cache_hit manifest={manifest_path}")
-                    if callable(progress_cb):
-                        progress_cb("Batch+sous-titres", 15, 100, "Manifest + sous-titres du cache réutilisés")
-                else:
-                    _log("quality_manifest_cache_miss")
-            elif current_has_valid_subtitles:
-                _log(f"quality_manifest_current_has_valid_subtitles manifest={manifest_path}")
-            try:
-                if reusable_manifest is None and not current_has_valid_subtitles:
-                    manifest_path = _generate_manifest_for_vod(
-                        root,
-                        detected_vod_path,
-                        generate_subtitles=True,
-                        use_transcript_for_selection=use_transcript_for_selection,
-                        progress_cb=progress_cb,
-                        preset_id=preset_id,
-                        subtitle_preset_id=subtitle_preset_id,
-                        subtitle_preset=selected_subtitle_preset,
-                    )
-                    session["manifest"] = manifest_path
-                    session["used_manifest_fallback"] = False
-                    session["use_transcript_for_selection"] = use_transcript_for_selection
-                    _log(f"Regenerated manifest with subtitles: {manifest_path}")
-            except Exception as exc:
-                msg = f"Échec de génération du manifest avec sous-titres auto: {exc}"
-                _log(msg)
-                return {"message": msg, "warnings": [msg]}
-        elif use_transcript_for_selection:
-            if detected_vod is None or not Path(detected_vod).exists():
-                return {"message": "La sélection par transcript nécessite une source VOD détectée. Sélectionne un clip dans Resolve puis relance.", "warnings": []}
-            try:
-                manifest_path = _generate_manifest_for_vod(
-                    root,
-                    Path(detected_vod),
-                    generate_subtitles=False,
-                    use_transcript_for_selection=True,
-                    progress_cb=progress_cb,
-                    preset_id=preset_id,
-                )
-                session["manifest"] = manifest_path
-                session["used_manifest_fallback"] = False
-                session["use_transcript_for_selection"] = True
-                _log(f"Regenerated manifest with transcript selection: {manifest_path}")
-            except Exception as exc:
-                msg = f"Échec de génération du manifest avec sélection transcript: {exc}"
-                _log(msg)
-                return {"message": msg, "warnings": [msg]}
-
-        batch_id, plan_map, timelines, warnings = _build_from_manifest(
+        return _session_actions.generate_session_batch(
             root,
             project,
             media_pool,
-            manifest_path,
-            output_dir,
-            preset_name,
-            selected_preset,
-            transcript_query,
-            render_master,
-            queue_render=True,
-            detected_vod_path=detected_vod,
-            user_vod_dir=user_vod_dir,
-            require_subtitles=require_subtitles,
-            subtitle_template_name=subtitle_template_name,
-            subtitle_offset_ms=subtitle_offset_ms,
-            subtitle_style=subtitle_style,
-            progress_cb=progress_cb,
+            session,
+            default_manifest,
+            presets_data,
+            params,
+            session_action_deps,
+            DEFAULT_SUBTITLE_PRESET_ID,
+            SUBTITLE_TEMPLATE_AUTO_LABEL,
         )
-
-        if require_subtitles and generate_optimized_media_quality:
-            try:
-                opt_warnings, opt_report = _generate_optimized_media_for_batch(
-                    root,
-                    project,
-                    media_pool,
-                    batch_id,
-                    timelines,
-                    progress_cb=progress_cb,
-                )
-                warnings.extend(opt_warnings)
-                warnings.append(f"Rapport médias optimisés: {opt_report}")
-            except Exception as exc:
-                warnings.append(f"Échec de génération des médias optimisés: {exc}")
-                _log(f"optimized_media_generation_failed err={exc}")
-
-        if require_subtitles and preview_safe_quality:
-            warnings.extend(preview_warnings)
-        session["batch_id"] = batch_id
-        session["manifest"] = manifest_path
-        session["plan_map"] = plan_map
-        msg = f"{len(timelines)} timeline(s) générée(s)"
-        if bool(session.get("used_manifest_fallback", False)):
-            warnings.append(f"Manifest de secours utilisé: {manifest_path}")
-        if warnings:
-            msg += f" ({len(warnings)} avertissements)"
-        _log(f"UI generate: {msg}")
-        return {"message": msg, "warnings": warnings}
 
     def on_update(params: dict[str, Any]) -> dict[str, Any] | str:
-        if not session.get("batch_id"):
-            return {"message": "Génère d'abord le batch.", "warnings": []}
-        manifest_value = session.get("manifest") or default_manifest
-        if not manifest_value:
-            return {"message": "Aucun manifest disponible. Relance le script pour en régénérer un.", "warnings": []}
-        manifest_path = Path(manifest_value)
-        output_dir = Path(params["output"])
-        preset_name = str(params["render_preset"])
-        preset_id = str(params["preset_id"])
-        subtitle_preset_id = str(params.get("subtitle_preset_id", DEFAULT_SUBTITLE_PRESET_ID) or DEFAULT_SUBTITLE_PRESET_ID)
-        transcript_query = str(params["query"])
-        use_transcript_for_selection = bool(params.get("use_transcript_for_selection", False))
-        subtitle_template_name = str(params.get("subtitle_template_name", SUBTITLE_TEMPLATE_AUTO_LABEL) or SUBTITLE_TEMPLATE_AUTO_LABEL)
-        try:
-            subtitle_offset_ms = int(float(str(params.get("subtitle_offset_ms", "-500") or "-500")))
-        except Exception:
-            subtitle_offset_ms = -500
-        vod_dir_raw = str(params.get("vod_dir", "")).strip()
-        user_vod_dir = Path(vod_dir_raw) if vod_dir_raw else None
-        detected_vod = session.get("detected_vod")
-        progress_cb = params.get("_progress_cb")
-        selected_preset = dict((presets_data.get("presets", {}) or {}).get(preset_id, {}))
-        if not selected_preset:
-            return {"message": f"Preset introuvable: {preset_id}", "warnings": []}
-        selected_subtitle_preset = dict((presets_data.get("subtitle_presets", {}) or {}).get(subtitle_preset_id, {}))
-        subtitle_style = _subtitle_style_from_preset(selected_subtitle_preset)
-
-        if use_transcript_for_selection:
-            if detected_vod is None or not Path(detected_vod).exists():
-                return {"message": "La sélection par transcript nécessite une source VOD détectée. Sélectionne un clip dans Resolve puis relance.", "warnings": []}
-            try:
-                manifest_path = _generate_manifest_for_vod(
-                    root,
-                    Path(detected_vod),
-                    generate_subtitles=False,
-                    use_transcript_for_selection=True,
-                    progress_cb=progress_cb,
-                    preset_id=preset_id,
-                    subtitle_preset_id=subtitle_preset_id,
-                    subtitle_preset=selected_subtitle_preset,
-                )
-                session["manifest"] = manifest_path
-                session["used_manifest_fallback"] = False
-                session["use_transcript_for_selection"] = True
-                _log(f"Regenerated manifest for update with transcript selection: {manifest_path}")
-            except Exception as exc:
-                msg = f"Échec de génération du manifest avec sélection transcript: {exc}"
-                _log(msg)
-                return {"message": msg, "warnings": [msg]}
-
-        batch_id, plan_map, timelines, warnings = _build_from_manifest(
+        return _session_actions.update_session_composition(
             root,
             project,
             media_pool,
-            manifest_path,
-            output_dir,
-            preset_name,
-            selected_preset,
-            transcript_query,
-            render_master=False,
-            queue_render=False,
-            detected_vod_path=detected_vod,
-            user_vod_dir=user_vod_dir,
-            require_subtitles=False,
-            subtitle_template_name=subtitle_template_name,
-            subtitle_offset_ms=subtitle_offset_ms,
-            subtitle_style=subtitle_style,
-            progress_cb=progress_cb,
+            session,
+            default_manifest,
+            presets_data,
+            params,
+            session_action_deps,
+            DEFAULT_SUBTITLE_PRESET_ID,
+            SUBTITLE_TEMPLATE_AUTO_LABEL,
         )
-        session["batch_id"] = batch_id
-        session["manifest"] = manifest_path
-        session["plan_map"] = plan_map
-        msg = f"Composition mise à jour sur {len(timelines)} timeline(s)"
-        if bool(session.get("used_manifest_fallback", False)):
-            warnings.append(f"Manifest de secours utilisé: {manifest_path}")
-        if warnings:
-            msg += f" ({len(warnings)} avertissements)"
-        _log(f"UI update: {msg}")
-        return {"message": msg, "warnings": warnings}
 
     _ask_user_inputs(default_manifest, presets_data, resolve, on_generate, on_update, session)
 

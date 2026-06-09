@@ -1,0 +1,97 @@
+{
+  "batch_id": "batch_20260608_071833_15c54b",
+  "source_vods": [
+    "E:\\2026-06-07 22-20-51.mp4"
+  ],
+  "clips": [
+    {
+      "clip_id": "2026-06-07 22-20-51__chapter_0001",
+      "display_name": "Chapitre 1",
+      "source_path": "E:\\2026-06-07 22-20-51.mp4",
+      "start_seconds": 3633.15,
+      "end_seconds": 3668.15,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "timeline_name": "batch_20260608_071833_15c54b__Chapitre 1"
+    },
+    {
+      "clip_id": "2026-06-07 22-20-51__chapter_0002",
+      "display_name": "Chapitre 2",
+      "source_path": "E:\\2026-06-07 22-20-51.mp4",
+      "start_seconds": 3781.316,
+      "end_seconds": 3816.316,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "timeline_name": "batch_20260608_071833_15c54b__Chapitre 2"
+    },
+    {
+      "clip_id": "2026-06-07 22-20-51__chapter_0003",
+      "display_name": "Chapitre 3",
+      "source_path": "E:\\2026-06-07 22-20-51.mp4",
+      "start_seconds": 4579.15,
+      "end_seconds": 4614.15,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "timeline_name": "batch_20260608_071833_15c54b__Chapitre 3"
+    },
+    {
+      "clip_id": "2026-06-07 22-20-51__chapter_0004",
+      "display_name": "Chapitre 4",
+      "source_path": "E:\\2026-06-07 22-20-51.mp4",
+      "start_seconds": 4987.15,
+      "end_seconds": 5020.383,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker;trim=voice",
+      "overflow": false,
+      "timeline_name": "batch_20260608_071833_15c54b__Chapitre 4"
+    },
+    {
+      "clip_id": "2026-06-07 22-20-51__chapter_0005",
+      "display_name": "Chapitre 5",
+      "source_path": "E:\\2026-06-07 22-20-51.mp4",
+      "start_seconds": 5006.433,
+      "end_seconds": 5041.433,
+      "mandatory": true,
+      "seed_type": "chapter",
+      "score": 1.0,
+      "reason": "OBS chapter marker",
+      "overflow": false,
+      "timeline_name": "batch_20260608_071833_15c54b__Chapitre 5"
+    }
+  ],
+  "pipeline_version": "0.1.0",
+  "meta": {
+    "source_vod_path": "E:\\2026-06-07 22-20-51.mp4",
+    "preset_id": "",
+    "subtitle_preset_id": "",
+    "generated_with_subtitles": false,
+    "use_transcript_for_selection": false,
+    "transcript_path": "C:\\Users\\untho\\Desktop\\Short Editor\\output\\transcripts\\2026-06-07 22-20-51.json",
+    "transcript_exists_pre_generation": false
+  },
+  "warnings": [
+    "2026-06-07 22-20-51.mp4: Skipped chapter 0 at 0.000s: auto_start_chapter_0",
+    "2026-06-07 22-20-51__chapter_0004: dead-air trim 4985.38-5020.38s -> 4987.15-5020.38s"
+  ],
+  "quota_summary": [
+    {
+      "vod": "2026-06-07 22-20-51.mp4",
+      "target_quota": 5,
+      "max_quota": 6,
+      "chapter_used": 5,
+      "fallback_added": 0,
+      "total_selected": 5
+    }
+  ]
+}

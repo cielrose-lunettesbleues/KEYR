@@ -46,7 +46,6 @@ class ClipCandidate:
     score: float
     reason: str
     overflow: bool = False
-    subtitle_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -5,18 +5,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from .clip_builder import (
-    build_chapter_candidates_with_skips,
-    compute_quota,
-    discover_fallback_candidates,
-    trim_dead_air_on_boundaries,
-    tag_overflow,
-)
+from .chapters import build_chapter_candidates_with_skips, compute_quota, tag_overflow
+from .fallback import discover_fallback_candidates
+from .trimming import trim_dead_air_on_boundaries
 from .ingest import probe_vod
 from .models import BatchReport, ClipCandidate
 from .render import render_clips_ffmpeg
-from .subtitles import generate_srt_for_clip
-from .transcription import ensure_transcript
+from .selection import select_non_overlapping_candidates
 
 
 def _assign_simple_display_names(clips: list[ClipCandidate]) -> None:
@@ -45,7 +40,6 @@ def _ensure_dirs(cfg: dict) -> dict[str, Path]:
     (dirs["output"] / "reports").mkdir(parents=True, exist_ok=True)
     (dirs["output"] / "clips").mkdir(parents=True, exist_ok=True)
     (dirs["output"] / "transcripts").mkdir(parents=True, exist_ok=True)
-    (dirs["output"] / "subtitles").mkdir(parents=True, exist_ok=True)
     return dirs
 
 
@@ -89,11 +83,11 @@ def run_batch(cfg: dict) -> dict:
                 c.clip_id = f"{vod_path.stem}__{c.clip_id}"
 
             needed = max(0, target_quota - len(chapter_clips))
-            fallback_selected = _select_non_overlapping_fallback(chapter_clips, fallback_clips, needed, overlap_threshold=0.4)
+            fallback_selected = select_non_overlapping_candidates(chapter_clips, fallback_clips, needed, overlap_threshold=0.4)
             if len(fallback_selected) < needed:
                 relaxed_needed = needed - len(fallback_selected)
                 relaxed_pool = [c for c in fallback_clips if c not in fallback_selected]
-                relaxed_more = _select_non_overlapping_fallback(
+                relaxed_more = select_non_overlapping_candidates(
                     chapter_clips + fallback_selected,
                     relaxed_pool,
                     relaxed_needed,
@@ -105,23 +99,6 @@ def run_batch(cfg: dict) -> dict:
 
         chapter_clips = tag_overflow(chapter_clips, max_quota)
         warnings.extend(trim_dead_air_on_boundaries(manifest, chapter_clips, cfg, dirs["work"]))
-
-        captions_cfg = cfg.get("captions", {})
-        captions_enabled = bool(captions_cfg.get("enabled", True))
-        transcript_path: Path | None = None
-        if captions_enabled:
-            try:
-                transcript_path = ensure_transcript(vod_path, cfg, dirs["output"] / "transcripts")
-            except Exception as exc:
-                warnings.append(f"{vod_path.name}: transcript failed: {exc}")
-
-        if captions_enabled and transcript_path is not None:
-            subtitle_dir = dirs["output"] / "subtitles" / batch_id
-            for c in chapter_clips:
-                out_srt = subtitle_dir / f"{c.clip_id}.srt"
-                ok = generate_srt_for_clip(transcript_path, c.start_seconds, c.end_seconds, out_srt, captions_cfg)
-                if ok:
-                    c.subtitle_path = str(out_srt)
 
         all_clips.extend(chapter_clips)
         quota_summary.append(
@@ -185,44 +162,6 @@ def run_batch(cfg: dict) -> dict:
     }
 
 
-def _overlap_ratio(a: ClipCandidate, b: ClipCandidate) -> float:
-    left = max(a.start_seconds, b.start_seconds)
-    right = min(a.end_seconds, b.end_seconds)
-    if right <= left:
-        return 0.0
-    inter = right - left
-    shortest = max(0.001, min(a.end_seconds - a.start_seconds, b.end_seconds - b.start_seconds))
-    return inter / shortest
-
-
-def _clips_too_close(a: ClipCandidate, b: ClipCandidate, overlap_threshold: float, min_center_distance_seconds: float = 60.0) -> bool:
-    if _overlap_ratio(a, b) > overlap_threshold:
-        return True
-    a_center = a.start_seconds + ((a.end_seconds - a.start_seconds) / 2.0)
-    b_center = b.start_seconds + ((b.end_seconds - b.start_seconds) / 2.0)
-    return abs(a_center - b_center) < min_center_distance_seconds
-
-
-def _select_non_overlapping_fallback(
-    existing: list[ClipCandidate],
-    candidates: list[ClipCandidate],
-    needed: int,
-    overlap_threshold: float = 0.4,
-) -> list[ClipCandidate]:
-    if needed <= 0:
-        return []
-    selected: list[ClipCandidate] = []
-    for c in candidates:
-        too_close = any(_clips_too_close(c, e, overlap_threshold) for e in existing)
-        too_close = too_close or any(_clips_too_close(c, s, overlap_threshold) for s in selected)
-        if too_close:
-            continue
-        selected.append(c)
-        if len(selected) >= needed:
-            break
-    return selected
-
-
 def _write_feedback_template(path: Path, clips: list[ClipCandidate]) -> None:
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
@@ -246,7 +185,6 @@ def _write_csv_report(path: Path, clips: list[ClipCandidate]) -> None:
                 "score",
                 "reason",
                 "overflow",
-                "subtitle_path",
             ]
         )
         for c in clips:
@@ -262,7 +200,6 @@ def _write_csv_report(path: Path, clips: list[ClipCandidate]) -> None:
                     c.score,
                     c.reason,
                     c.overflow,
-                    c.subtitle_path,
                 ]
             )
 
@@ -270,7 +207,7 @@ def _write_csv_report(path: Path, clips: list[ClipCandidate]) -> None:
 def _write_review_index(path: Path, clips: list[ClipCandidate], rendered_map: dict[str, str]) -> None:
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["clip_id", "display_name", "file_path", "start_seconds", "end_seconds", "seed_type", "mandatory", "reason", "overflow", "subtitle_path"])
+        writer.writerow(["clip_id", "display_name", "file_path", "start_seconds", "end_seconds", "seed_type", "mandatory", "reason", "overflow"])
         for c in clips:
             writer.writerow(
                 [
@@ -283,6 +220,5 @@ def _write_review_index(path: Path, clips: list[ClipCandidate], rendered_map: di
                     c.mandatory,
                     c.reason,
                     c.overflow,
-                    c.subtitle_path,
                 ]
             )

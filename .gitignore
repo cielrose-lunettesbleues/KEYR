@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.log
+
+# Runtime outputs. Keep .gitkeep files if a directory must exist in a fresh clone.
+output/clips/
+output/reports/
+output/resolve_optimized/
+output/subtitles/
+work/*
+!work/.gitkeep

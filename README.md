@@ -1,94 +1,100 @@
-## Short Editor (Automated Twitch VOD -> Shorts)
+# Short Editor
 
-This project is a modular, batch-oriented pipeline to turn OBS Hybrid MP4 Twitch VODs into vertical short clips.
+Pipeline local pour transformer des VOD Twitch/OBS `.mp4` en shorts verticaux et les assembler dans DaVinci Resolve.
 
-### Goals
-- Always include OBS chapter moments.
-- Target 2-3 clips per hour.
-- Render vertical 1080x1920 at 60 FPS.
-- Use French social-style captions.
-- Support multi-track audio routing with easy mute/mix controls.
-- Improve output quality after every batch through feedback.
+## Features Conservées
 
-### Quick Start
-1. Install Python 3.11+.
-2. Ensure `ffprobe` is available in `PATH`.
-3. Put VOD MP4 files in `input/`.
-4. Run:
+- Détection des chapitres OBS, avec exclusion systématique du chapitre `0` / `start_seconds == 0`.
+- Inclusion prioritaire des chapitres valides.
+- Complément automatique avec clips `Auto N` quand les chapitres ne suffisent pas au quota.
+- Sélection auto multi-pass basée sur transcript, énergie audio, hook et anti-overlap.
+- Rendu local ffmpeg vertical `1080x1920 @ 60fps` pour review CLI.
+- Intégration DaVinci Resolve avec une timeline par clip et une timeline `MASTER_REVIEW`.
+- Réouverture de session: si une VOD sélectionnée possède déjà un manifest, le script propose de le rouvrir.
+- Génération initiale de manifest sans transcript au lancement Resolve.
+- Mode `Generate + Auto Subtitles (Quality)` qui génère le transcript à la demande puis applique les sous-titres via Text+ Resolve.
+- Feedback de batch et apprentissage du lexique utilisateur.
 
-```bash
-python -m short_editor.cli run-batch --config config/pipeline.json
+## Sous-Titres
+
+Les sous-titres ne sont plus exportés en fichiers `.srt`.
+
+Le flux actuel est:
+
+```text
+VOD -> transcript JSON faster-whisper -> segments en mémoire -> template Text+ Resolve
 ```
 
-Or use easy Windows commands:
+Le template Resolve est fourni par `resolve_integration/assets/shorteditor-caption-bin.drb`. Si l'application Text+ échoue, le script remonte un warning; il ne génère pas de fallback SRT.
 
-```bat
-.\run_shorts.bat
-```
+## Installation
 
-5. Review generated files in `output/` and fill feedback in `feedback/`.
-6. Run:
-
-```bash
-python -m short_editor.cli learn --config config/pipeline.json --feedback feedback/latest_feedback.csv
-```
-
-Or use:
-
-```bat
-.\learn_shorts.bat
-```
-
-### Structure
-- `config/` pipeline settings and profile versions
-- `input/` source OBS Hybrid MP4 files
-- `work/` intermediate manifests and extracted data
-- `output/` clip plans and reports
-- `feedback/` batch review files
-- `short_editor/` source modules
-
-### Notes
-- This v1 builds production-ready manifests and clip plans, with render/transcribe steps designed as swappable modules.
-- You can integrate Hyperframes / Video-use orchestration by calling these module interfaces.
-- If no chapters are found in an MP4, fallback discovery uses audio-energy peaks, silence/activity filtering, and a 3-second hook score, then adds a warning in the batch manifest.
-- Chapter 0 (or any chapter at 0s) is treated as auto-start and always ignored.
-- If chapter clips are below target quota, fallback discovery auto-completes the batch to target clip count.
-- Exported review clips are written to `output/clips/<batch_id>/`.
-- A review map is generated at `output/reports/<batch_id>.review.csv` with `clip_id -> file_path`.
-- Default track routing is now optimized for your setup: voice analysis on track 2, context on track 5, Spotify muted (track 4), render base on track 6, and fallback skips first 8 minutes.
-
-### DaVinci Resolve Integration (Phase A)
-- Install script for Resolve menu:
+1. Installer Python 3.11+.
+2. Installer `ffmpeg` et `ffprobe` dans le `PATH`.
+3. Installer `faster-whisper` pour les transcripts utilisés par les clips auto et les sous-titres Text+.
+4. Pour Resolve, installer le script:
 
 ```bat
 .\INSTALL_RESOLVE_SCRIPT.bat
 ```
 
-- Open DaVinci Resolve (Studio 20 Beta), open your project, then run:
-  - `Workspace -> Scripts -> Utility -> run_shorts_batch_resolve`
+## Utilisation CLI
 
-- Script behavior:
-  - uses current open Resolve project
-  - auto-detects VOD from current Resolve context (selected/timeline clip first)
-  - if not detected, asks you to pick a VOD file
-  - auto-generates a fresh batch manifest before opening UI
-  - lets you select `Valo`, `Jeu`, or `React` profile
-  - opens a single master window (no popup chain)
-  - keeps the window open after generation
-  - includes built-in preset editor (`Load`, `Save`, `Save As`), collapsed by default
-  - supports `Update Composition (Batch)` without regenerating manifest
-  - uses a Y2K/XP-inspired UI theme (violet + yellow)
-  - creates one timeline per clip + one `MASTER_REVIEW` timeline
-  - queues H.264 shorts renders for clip timelines
-  - optional transcript semantic query: "Fais un clip du moment ou je dis ..."
+Lancer un batch local:
 
-- You can choose whether to queue a render job for `MASTER_REVIEW` too.
-- Shorts render output is forced to portrait target (`1080x1920 @ 60fps`).
+```bat
+py -3 -m short_editor.cli run-batch --config config\pipeline.json
+```
 
-### Resolve Presets
-- Presets are stored in `config/resolve_presets.json`.
-- The app can edit and save presets from Resolve UI (`Edit selected preset before run?`).
-- Default includes:
-  - `Valorant Preset` (fixed split, gameplay top + cam)
-  - `Jeux`
-  - `Just chatting`
+Ou:
+
+```bat
+.\run_shorts.bat
+```
+
+Appliquer le feedback:
+
+```bat
+py -3 -m short_editor.cli learn --config config\pipeline.json --feedback feedback\latest_feedback.csv
+```
+
+Ou:
+
+```bat
+.\learn_shorts.bat
+```
+
+## Utilisation Resolve
+
+1. Ouvrir un projet DaVinci Resolve.
+2. Sélectionner une VOD dans la timeline ou le Media Pool si possible.
+3. Lancer `Workspace -> Scripts -> Utility -> run_shorts_batch_resolve`.
+4. Si aucune VOD n'est détectée, le script propose d'en sélectionner une.
+5. Si un manifest existe déjà pour la VOD, le script propose de rouvrir la session.
+6. Sinon, un manifest frais est généré sans transcript.
+7. Dans l'UI, utiliser `Generate Batch (Fast)` ou `Generate + Auto Subtitles (Quality)`.
+
+## Structure
+
+- `short_editor/`: pipeline Python principal, selection clips, manifests, captions Text+ et analyse audio.
+- `resolve_integration/run_shorts_batch_resolve.py`: point d'entree installe dans Resolve.
+- `resolve_integration/resolve_app/`: modules Resolve extraits (`api`, `paths`, `presets`, `manifests`, `logging`).
+- `resolve_integration/assets/`: template Text+ et assets UI.
+- `config/`: configuration pipeline, presets Resolve et lexique utilisateur.
+- `input/`: VOD sources pour le mode CLI.
+- `output/`: manifests, clips rendus, transcripts et rapports générés.
+- `feedback/`: feedback courant et historique.
+- `archive/`: ancien code conservé hors application.
+- `tests/`: tests unitaires sans Resolve.
+
+## Vérification Rapide
+
+```bat
+py -3 -m py_compile short_editor\*.py resolve_integration\run_shorts_batch_resolve.py
+```
+
+Si des tests sont présents:
+
+```bat
+py -3 -m unittest discover -s tests
+```

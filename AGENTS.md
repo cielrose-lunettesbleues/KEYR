@@ -18,11 +18,17 @@
 ## Architecture reelle (points d'entree)
 - CLI unique: `short_editor/cli.py` (`run-batch`, `learn`).
 - Orchestration batch: `short_editor/pipeline.py`.
+- Manifests batch/Resolve: `short_editor/manifest_builder.py`.
+- Chapitres/quota: `short_editor/chapters.py`.
+- Selection clips auto: `short_editor/fallback.py`.
+- Analyse audio: `short_editor/audio_analysis.py`.
+- Trim dead-air: `short_editor/trimming.py`.
 - Render ffmpeg: `short_editor/render.py`.
 - Transcription locale: `short_editor/transcription.py` (faster-whisper).
-- Sous-titres dynamiques: `short_editor/subtitles.py` (generation `.srt` par clip).
+- Sous-titres Text+ Resolve: `short_editor/captions.py` genere des segments en memoire depuis transcript, sans `.srt`.
 - Feedback + lexique user: `short_editor/feedback.py`.
 - UI Resolve + generation manifest auto: `resolve_integration/run_shorts_batch_resolve.py`.
+- Helpers Resolve: `resolve_integration/resolve_app/` (`api`, `logging`, `paths`, `presets`, `manifests`, `plans`, `media_pool`, `timelines`, `transforms`, `selected_clip`, `render_queue`, `textplus`, `project_settings`, `optimized_media`).
 - Presets Resolve persistes dans `config/resolve_presets.json`.
 
 ## Regles metier a ne pas casser
@@ -55,10 +61,10 @@
   - picker VOD parent au loader pour eviter conflit de fenetres.
 
 ## Sous-titres (etat actuel)
-- Mode cible: sous-titres editables en timeline Resolve.
+- Mode cible: clips Text+ editables en timeline Resolve.
 - Moteur: `faster-whisper` local (`config/pipeline.json > captions.engine`).
-- Generation auto transcript + SRT par clip activee via mode Quality.
-- Import sous-titres en best-effort selon API Resolve (fallbacks inclus).
+- Mode Quality genere/reutilise le transcript puis applique le template Text+ Resolve directement.
+- Aucun fichier `.srt` ni champ `subtitle_path` dans le flux actif.
 
 ## Selection clips fallback (etat actuel)
 - Chapitres valides priorite absolue.
@@ -73,7 +79,6 @@
 - Manifests batch: `output/manifests/`.
 - Clips rendus: `output/clips/<batch_id>/`.
 - Index review principal: `output/reports/<batch_id>.review.csv`.
-- Sous-titres: `output/subtitles/<batch_id>/`.
 - Transcripts: `output/transcripts/<vod_stem>.json`.
 - Feedback ratings: `feedback/latest_feedback.csv` et `feedback/history/`.
 - Lexique learn user: `config/transcript_lexicon_user.json`.
